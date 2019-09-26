@@ -1,8 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"crypto/elliptic"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/big"
@@ -41,6 +44,7 @@ import (
 	"github.com/status-im/status-go/services/wallet"
 	"github.com/status-im/status-go/signal"
 	"github.com/status-im/status-go/transactions"
+	ens "github.com/wealdtech/go-ens/v3"
 )
 
 const (
@@ -553,6 +557,44 @@ func (b *StatusBackend) GetNodesFromContract(rpcEndpoint string, contractAddress
 	}
 
 	return response, nil
+}
+
+// VerifyENSName verifies that a registered ENS name matches the expected public key
+func (b *StatusBackend) VerifyENSName(ensName, publicKeyStr, rpcEndpoint, contractAddress string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), contractQueryTimeout)
+	defer cancel()
+
+	expectedPubKeyBytes, err := hex.DecodeString(publicKeyStr)
+	if err != nil {
+		return false, err
+	}
+
+	_, err = ethcrypto.UnmarshalPubkey(expectedPubKeyBytes)
+	if err != nil {
+		return false, err
+	}
+
+	ethclient, err := ethclient.DialContext(ctx, rpcEndpoint)
+	if err != nil {
+		return false, err
+	}
+
+	// Resolve ensName
+	resolver, err := ens.NewResolver(ethclient, ensName)
+	if err != nil {
+		b.log.Error("error while creating ENS name resolver", "ensName", ensName, "error", err)
+		return false, err
+	}
+	x, y, err := resolver.PubKey()
+	if err != nil {
+		b.log.Error("error while resolving public key from ENS name", "ensName", ensName, "error", err)
+		return false, err
+	}
+
+	// Assemble the bytes returned for the pubkey
+	pubKeyBytes := elliptic.Marshal(ethcrypto.S256(), new(big.Int).SetBytes(x[:]), new(big.Int).SetBytes(y[:]))
+
+	return bytes.Equal(pubKeyBytes, expectedPubKeyBytes), err
 }
 
 // CallPrivateRPC executes public and private RPC requests on node's in-proc RPC server.
