@@ -49,6 +49,7 @@ func OpenAccounts(datadir string) string {
 
 // GenerateConfig for status node.
 func GenerateConfig(datadir string, networkID int) string {
+	logger.Info("CALLING GenerateConfig")
 	config, err := params.NewNodeConfig(datadir, uint64(networkID))
 	if err != nil {
 		return makeJSONResponse(err)
