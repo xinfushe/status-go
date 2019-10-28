@@ -176,66 +176,66 @@ func (s *Service) retrieveMessagesLoop(tick time.Duration, cancel <-chan struct{
 				continue
 			}
 
-			var signalMessages []*signal.Messages
-
 			for chat, messages := range chatWithMessages {
 
-				var dedupMessages []*dedup.DeduplicateMessage
-				// Filter out already saved messages
-				for _, message := range messages {
-					if !existingMessages[message.ID.String()] {
-						id := fmt.Sprintf("0x%s", hex.EncodeToString(crypto.FromECDSAPub(message.SigPubKey())))
+				batch := 20
+				for i := 0; i < len(messages); i += batch {
+					j := i + batch
+					if j > len(messages) {
+						j = len(messages)
+					}
+					var dedupMessages []*dedup.DeduplicateMessage
+					// Filter out already saved messages
+					for _, message := range messages[i:j] {
+						if !existingMessages[message.ID.String()] {
+							id := fmt.Sprintf("0x%s", hex.EncodeToString(crypto.FromECDSAPub(message.SigPubKey())))
 
-						identicon, err := protocol.Identicon(id)
-						if err != nil {
-							log.Error("failed to generate identicon", "err", err)
-							continue
+							identicon, err := protocol.Identicon(id)
+							if err != nil {
+								log.Error("failed to generate identicon", "err", err)
+								continue
 
-						}
-						alias, err := protocol.GenerateAlias(id)
-						if err != nil {
-							log.Error("failed to generate identicon", "err", err)
-							continue
+							}
+							alias, err := protocol.GenerateAlias(id)
+							if err != nil {
+								log.Error("failed to generate identicon", "err", err)
+								continue
 
-						}
+							}
 
-						dedupMessage := &dedup.DeduplicateMessage{
-							Metadata: dedup.Metadata{
-								Author: dedup.Author{
-									PublicKey: crypto.FromECDSAPub(message.SigPubKey()),
-									Alias:     alias,
-									Identicon: identicon,
+							dedupMessage := &dedup.DeduplicateMessage{
+								Metadata: dedup.Metadata{
+									Author: dedup.Author{
+										PublicKey: crypto.FromECDSAPub(message.SigPubKey()),
+										Alias:     alias,
+										Identicon: identicon,
+									},
+									MessageID:    message.ID,
+									EncryptionID: message.Hash,
 								},
-								MessageID:    message.ID,
-								EncryptionID: message.Hash,
-							},
-							Message: message.TransportMessage,
+								Message: message.TransportMessage,
+							}
+							dedupMessage.Message.Payload = message.DecryptedPayload
+							dedupMessage.Payload = string(message.DecryptedPayload)
+							dedupMessages = append(dedupMessages, dedupMessage)
 						}
-						dedupMessage.Message.Payload = message.DecryptedPayload
-						dedupMessage.Payload = string(message.DecryptedPayload)
-						dedupMessages = append(dedupMessages, dedupMessage)
-					}
-				}
-				dedupMessages = s.deduplicator.Deduplicate(dedupMessages)
-
-				if len(dedupMessages) != 0 {
-					signalMessage := &signal.Messages{
-						Chat:     chat,
-						Error:    nil, // TODO: what is it needed for?
-						Messages: dedupMessages,
 					}
 
-					signalMessages = append(signalMessages, signalMessage)
+					dedupMessages = s.deduplicator.Deduplicate(dedupMessages)
+
+					if len(dedupMessages) != 0 {
+						var signalMessages []*signal.Messages
+						signalMessage := &signal.Messages{
+							Chat:     chat,
+							Error:    nil, // TODO: what is it needed for?
+							Messages: dedupMessages,
+						}
+						signalMessages = append(signalMessages, signalMessage)
+						PublisherSignalHandler{}.NewMessages(signalMessages)
+					}
 				}
 			}
 
-			log.Debug("retrieve messages loop", "messages", len(signalMessages))
-
-			if len(signalMessages) == 0 {
-				continue
-			}
-
-			PublisherSignalHandler{}.NewMessages(signalMessages)
 		case <-cancel:
 			return
 		}
