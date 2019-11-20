@@ -7,6 +7,8 @@ github.com/allegro/bigcache/queue
 github.com/aristanetworks/goarista/monotime
 # github.com/beevik/ntp v0.2.0
 github.com/beevik/ntp
+# github.com/beorn7/perks v1.0.1
+github.com/beorn7/perks/quantile
 # github.com/btcsuite/btcd v0.0.0-20190523000118-16327141da8c
 github.com/btcsuite/btcd/btcec
 github.com/btcsuite/btcd/chaincfg
@@ -16,6 +18,8 @@ github.com/btcsuite/btcd/wire
 github.com/btcsuite/btcutil
 github.com/btcsuite/btcutil/base58
 github.com/btcsuite/btcutil/bech32
+# github.com/cespare/xxhash/v2 v2.1.0
+github.com/cespare/xxhash/v2
 # github.com/coreos/go-semver v0.3.0
 github.com/coreos/go-semver/semver
 # github.com/davecgh/go-spew v1.1.1
@@ -25,73 +29,73 @@ github.com/deckarep/golang-set
 # github.com/edsrzf/mmap-go v0.0.0-20170320065105-0bce6a688712
 github.com/edsrzf/mmap-go
 # github.com/ethereum/go-ethereum v1.8.27 => github.com/status-im/go-ethereum v1.8.27-status.3
-github.com/ethereum/go-ethereum/accounts
-github.com/ethereum/go-ethereum/accounts/keystore
-github.com/ethereum/go-ethereum/common
-github.com/ethereum/go-ethereum/common/hexutil
-github.com/ethereum/go-ethereum/crypto
-github.com/ethereum/go-ethereum/ethclient
-github.com/ethereum/go-ethereum/log
-github.com/ethereum/go-ethereum/node
-github.com/ethereum/go-ethereum/p2p/enode
-github.com/ethereum/go-ethereum/p2p/discv5
-github.com/ethereum/go-ethereum/p2p
-github.com/ethereum/go-ethereum/metrics
 github.com/ethereum/go-ethereum
-github.com/ethereum/go-ethereum/p2p/enr
-github.com/ethereum/go-ethereum/rlp
+github.com/ethereum/go-ethereum/accounts
 github.com/ethereum/go-ethereum/accounts/abi
 github.com/ethereum/go-ethereum/accounts/abi/bind
-github.com/ethereum/go-ethereum/core/types
-github.com/ethereum/go-ethereum/event
-github.com/ethereum/go-ethereum/core
-github.com/ethereum/go-ethereum/eth
-github.com/ethereum/go-ethereum/eth/downloader
-github.com/ethereum/go-ethereum/les
-github.com/ethereum/go-ethereum/p2p/nat
-github.com/ethereum/go-ethereum/params
-github.com/ethereum/go-ethereum/common/mclock
-github.com/ethereum/go-ethereum/rpc
-github.com/ethereum/go-ethereum/ethapi
-github.com/ethereum/go-ethereum/eth/filters
-github.com/ethereum/go-ethereum/crypto/ecies
-github.com/ethereum/go-ethereum/consensus/ethash
-github.com/ethereum/go-ethereum/common/math
-github.com/ethereum/go-ethereum/crypto/secp256k1
-github.com/ethereum/go-ethereum/accounts/usbwallet
-github.com/ethereum/go-ethereum/ethdb
-github.com/ethereum/go-ethereum/internal/debug
-github.com/ethereum/go-ethereum/p2p/netutil
-github.com/ethereum/go-ethereum/common/bitutil
-github.com/ethereum/go-ethereum/p2p/discover
-github.com/ethereum/go-ethereum/trie
 github.com/ethereum/go-ethereum/accounts/abi/bind/backends
+github.com/ethereum/go-ethereum/accounts/keystore
+github.com/ethereum/go-ethereum/accounts/usbwallet
+github.com/ethereum/go-ethereum/accounts/usbwallet/internal/trezor
+github.com/ethereum/go-ethereum/common
+github.com/ethereum/go-ethereum/common/bitutil
+github.com/ethereum/go-ethereum/common/fdlimit
+github.com/ethereum/go-ethereum/common/hexutil
+github.com/ethereum/go-ethereum/common/math
+github.com/ethereum/go-ethereum/common/mclock
 github.com/ethereum/go-ethereum/common/prque
 github.com/ethereum/go-ethereum/consensus
+github.com/ethereum/go-ethereum/consensus/clique
+github.com/ethereum/go-ethereum/consensus/ethash
 github.com/ethereum/go-ethereum/consensus/misc
+github.com/ethereum/go-ethereum/contracts/ens/contract
+github.com/ethereum/go-ethereum/core
+github.com/ethereum/go-ethereum/core/bloombits
 github.com/ethereum/go-ethereum/core/rawdb
 github.com/ethereum/go-ethereum/core/state
+github.com/ethereum/go-ethereum/core/types
 github.com/ethereum/go-ethereum/core/vm
-github.com/ethereum/go-ethereum/consensus/clique
-github.com/ethereum/go-ethereum/core/bloombits
-github.com/ethereum/go-ethereum/eth/fetcher
-github.com/ethereum/go-ethereum/eth/gasprice
-github.com/ethereum/go-ethereum/eth/tracers
-github.com/ethereum/go-ethereum/internal/ethapi
-github.com/ethereum/go-ethereum/miner
-github.com/ethereum/go-ethereum/les/flowcontrol
-github.com/ethereum/go-ethereum/light
-github.com/ethereum/go-ethereum/contracts/ens/contract
-github.com/ethereum/go-ethereum/accounts/usbwallet/internal/trezor
-github.com/ethereum/go-ethereum/metrics/exp
+github.com/ethereum/go-ethereum/crypto
 github.com/ethereum/go-ethereum/crypto/bn256
-github.com/ethereum/go-ethereum/eth/tracers/internal/tracers
-github.com/ethereum/go-ethereum/common/fdlimit
 github.com/ethereum/go-ethereum/crypto/bn256/cloudflare
 github.com/ethereum/go-ethereum/crypto/bn256/google
+github.com/ethereum/go-ethereum/crypto/ecies
+github.com/ethereum/go-ethereum/crypto/secp256k1
+github.com/ethereum/go-ethereum/eth
+github.com/ethereum/go-ethereum/eth/downloader
+github.com/ethereum/go-ethereum/eth/fetcher
+github.com/ethereum/go-ethereum/eth/filters
+github.com/ethereum/go-ethereum/eth/gasprice
+github.com/ethereum/go-ethereum/eth/tracers
+github.com/ethereum/go-ethereum/eth/tracers/internal/tracers
+github.com/ethereum/go-ethereum/ethapi
+github.com/ethereum/go-ethereum/ethclient
+github.com/ethereum/go-ethereum/ethdb
+github.com/ethereum/go-ethereum/event
+github.com/ethereum/go-ethereum/internal/debug
+github.com/ethereum/go-ethereum/internal/ethapi
+github.com/ethereum/go-ethereum/les
+github.com/ethereum/go-ethereum/les/flowcontrol
+github.com/ethereum/go-ethereum/light
+github.com/ethereum/go-ethereum/log
+github.com/ethereum/go-ethereum/metrics
+github.com/ethereum/go-ethereum/metrics/exp
+github.com/ethereum/go-ethereum/miner
+github.com/ethereum/go-ethereum/node
+github.com/ethereum/go-ethereum/p2p
+github.com/ethereum/go-ethereum/p2p/discover
+github.com/ethereum/go-ethereum/p2p/discv5
+github.com/ethereum/go-ethereum/p2p/enode
+github.com/ethereum/go-ethereum/p2p/enr
+github.com/ethereum/go-ethereum/p2p/nat
+github.com/ethereum/go-ethereum/p2p/netutil
+github.com/ethereum/go-ethereum/params
+github.com/ethereum/go-ethereum/rlp
+github.com/ethereum/go-ethereum/rpc
+github.com/ethereum/go-ethereum/trie
 # github.com/fjl/memsize v0.0.0-20180418122429-ca190fb6ffbc
-github.com/fjl/memsize/memsizeui
 github.com/fjl/memsize
+github.com/fjl/memsize/memsizeui
 # github.com/go-playground/locales v0.12.1
 github.com/go-playground/locales
 github.com/go-playground/locales/currency
@@ -100,15 +104,15 @@ github.com/go-playground/universal-translator
 # github.com/go-stack/stack v1.8.0
 github.com/go-stack/stack
 # github.com/gogo/protobuf v1.2.1
-github.com/gogo/protobuf/proto
 github.com/gogo/protobuf/io
+github.com/gogo/protobuf/proto
 # github.com/golang-migrate/migrate/v4 v4.4.0
+github.com/golang-migrate/migrate/v4
 github.com/golang-migrate/migrate/v4/database
 github.com/golang-migrate/migrate/v4/source
-github.com/golang-migrate/migrate/v4
 # github.com/golang/mock v1.2.0
 github.com/golang/mock/gomock
-# github.com/golang/protobuf v1.3.1
+# github.com/golang/protobuf v1.3.2
 github.com/golang/protobuf/proto
 github.com/golang/protobuf/protoc-gen-go/descriptor
 # github.com/golang/snappy v0.0.1
@@ -139,8 +143,8 @@ github.com/ipfs/go-ipfs-util
 # github.com/ipfs/go-log v0.0.1
 github.com/ipfs/go-log
 github.com/ipfs/go-log/tracer
-github.com/ipfs/go-log/writer
 github.com/ipfs/go-log/tracer/wire
+github.com/ipfs/go-log/writer
 # github.com/jackpal/gateway v1.0.5
 github.com/jackpal/gateway
 # github.com/jackpal/go-nat-pmp v1.0.1
@@ -174,8 +178,8 @@ github.com/libp2p/go-libp2p/p2p/host/basic
 github.com/libp2p/go-libp2p/p2p/host/relay
 github.com/libp2p/go-libp2p/p2p/host/routed
 github.com/libp2p/go-libp2p/p2p/protocol/identify
-github.com/libp2p/go-libp2p/p2p/protocol/ping
 github.com/libp2p/go-libp2p/p2p/protocol/identify/pb
+github.com/libp2p/go-libp2p/p2p/protocol/ping
 # github.com/libp2p/go-libp2p-autonat v0.1.0
 github.com/libp2p/go-libp2p-autonat
 github.com/libp2p/go-libp2p-autonat/pb
@@ -183,23 +187,23 @@ github.com/libp2p/go-libp2p-autonat/pb
 github.com/libp2p/go-libp2p-circuit
 github.com/libp2p/go-libp2p-circuit/pb
 # github.com/libp2p/go-libp2p-core v0.0.3
+github.com/libp2p/go-libp2p-core/connmgr
 github.com/libp2p/go-libp2p-core/crypto
+github.com/libp2p/go-libp2p-core/crypto/pb
+github.com/libp2p/go-libp2p-core/discovery
 github.com/libp2p/go-libp2p-core/helpers
 github.com/libp2p/go-libp2p-core/host
+github.com/libp2p/go-libp2p-core/metrics
+github.com/libp2p/go-libp2p-core/mux
 github.com/libp2p/go-libp2p-core/network
 github.com/libp2p/go-libp2p-core/peer
-github.com/libp2p/go-libp2p-core/protocol
-github.com/libp2p/go-libp2p-core/connmgr
-github.com/libp2p/go-libp2p-core/metrics
 github.com/libp2p/go-libp2p-core/peerstore
 github.com/libp2p/go-libp2p-core/pnet
-github.com/libp2p/go-libp2p-core/crypto/pb
-github.com/libp2p/go-libp2p-core/mux
-github.com/libp2p/go-libp2p-core/transport
-github.com/libp2p/go-libp2p-core/sec
+github.com/libp2p/go-libp2p-core/protocol
 github.com/libp2p/go-libp2p-core/routing
+github.com/libp2p/go-libp2p-core/sec
 github.com/libp2p/go-libp2p-core/sec/insecure
-github.com/libp2p/go-libp2p-core/discovery
+github.com/libp2p/go-libp2p-core/transport
 # github.com/libp2p/go-libp2p-crypto v0.1.0
 github.com/libp2p/go-libp2p-crypto
 # github.com/libp2p/go-libp2p-discovery v0.1.0
@@ -213,9 +217,9 @@ github.com/libp2p/go-libp2p-nat
 # github.com/libp2p/go-libp2p-peer v0.2.0
 github.com/libp2p/go-libp2p-peer
 # github.com/libp2p/go-libp2p-peerstore v0.1.0
-github.com/libp2p/go-libp2p-peerstore/pstoremem
 github.com/libp2p/go-libp2p-peerstore
 github.com/libp2p/go-libp2p-peerstore/addr
+github.com/libp2p/go-libp2p-peerstore/pstoremem
 # github.com/libp2p/go-libp2p-secio v0.1.0
 github.com/libp2p/go-libp2p-secio
 github.com/libp2p/go-libp2p-secio/pb
@@ -249,6 +253,8 @@ github.com/libp2p/go-yamux
 github.com/mattn/go-colorable
 # github.com/mattn/go-isatty v0.0.5
 github.com/mattn/go-isatty
+# github.com/matttproud/golang_protobuf_extensions v1.0.1
+github.com/matttproud/golang_protobuf_extensions/pbutil
 # github.com/minio/blake2b-simd v0.0.0-20160723061019-3f5f724cb5b1
 github.com/minio/blake2b-simd
 # github.com/minio/sha256-simd v0.1.0
@@ -283,6 +289,20 @@ github.com/pborman/uuid
 github.com/pkg/errors
 # github.com/pmezard/go-difflib v1.0.0
 github.com/pmezard/go-difflib/difflib
+# github.com/prometheus/client_golang v1.2.1
+github.com/prometheus/client_golang/prometheus
+github.com/prometheus/client_golang/prometheus/internal
+github.com/prometheus/client_golang/prometheus/promhttp
+# github.com/prometheus/client_model v0.0.0-20190812154241-14fe0d1b01d4
+github.com/prometheus/client_model/go
+# github.com/prometheus/common v0.7.0
+github.com/prometheus/common/expfmt
+github.com/prometheus/common/internal/bitbucket.org/ww/goautoneg
+github.com/prometheus/common/model
+# github.com/prometheus/procfs v0.0.5
+github.com/prometheus/procfs
+github.com/prometheus/procfs/internal/fs
+github.com/prometheus/procfs/internal/util
 # github.com/prometheus/prometheus v0.0.0-20170814170113-3101606756c5
 github.com/prometheus/prometheus/util/flock
 # github.com/rjeczalik/notify v0.9.1
@@ -309,8 +329,8 @@ github.com/status-im/go-multiaddr-ethv4
 # github.com/status-im/migrate/v4 v4.3.1-status
 github.com/status-im/migrate/v4
 github.com/status-im/migrate/v4/database/postgres
-github.com/status-im/migrate/v4/source/go_bindata
 github.com/status-im/migrate/v4/database/sqlcipher
+github.com/status-im/migrate/v4/source/go_bindata
 # github.com/status-im/rendezvous v1.3.0
 github.com/status-im/rendezvous
 github.com/status-im/rendezvous/protocol
@@ -318,22 +338,22 @@ github.com/status-im/rendezvous/server
 # github.com/status-im/whisper v1.4.14
 github.com/status-im/whisper/whisperv6
 # github.com/stretchr/testify v1.3.0
+github.com/stretchr/testify/assert
 github.com/stretchr/testify/require
 github.com/stretchr/testify/suite
-github.com/stretchr/testify/assert
 # github.com/syndtr/goleveldb v1.0.0
 github.com/syndtr/goleveldb/leveldb
-github.com/syndtr/goleveldb/leveldb/errors
-github.com/syndtr/goleveldb/leveldb/iterator
-github.com/syndtr/goleveldb/leveldb/opt
-github.com/syndtr/goleveldb/leveldb/storage
-github.com/syndtr/goleveldb/leveldb/util
 github.com/syndtr/goleveldb/leveldb/cache
 github.com/syndtr/goleveldb/leveldb/comparer
+github.com/syndtr/goleveldb/leveldb/errors
 github.com/syndtr/goleveldb/leveldb/filter
+github.com/syndtr/goleveldb/leveldb/iterator
 github.com/syndtr/goleveldb/leveldb/journal
 github.com/syndtr/goleveldb/leveldb/memdb
+github.com/syndtr/goleveldb/leveldb/opt
+github.com/syndtr/goleveldb/leveldb/storage
 github.com/syndtr/goleveldb/leveldb/table
+github.com/syndtr/goleveldb/leveldb/util
 # github.com/whyrusleeping/go-logging v0.0.0-20170515211332-0457bb6b88fc
 github.com/whyrusleeping/go-logging
 # github.com/whyrusleeping/go-notifier v0.0.0-20170827234753-097c5d47330f
@@ -343,52 +363,52 @@ github.com/whyrusleeping/mafmt
 # github.com/whyrusleeping/multiaddr-filter v0.0.0-20160516205228-e903e4adabd7
 github.com/whyrusleeping/multiaddr-filter
 # golang.org/x/crypto v0.0.0-20190530122614-20be4c3c3ed5
+golang.org/x/crypto/blake2s
+golang.org/x/crypto/blowfish
+golang.org/x/crypto/curve25519
+golang.org/x/crypto/ed25519
+golang.org/x/crypto/ed25519/internal/edwards25519
+golang.org/x/crypto/hkdf
+golang.org/x/crypto/pbkdf2
+golang.org/x/crypto/ripemd160
+golang.org/x/crypto/scrypt
 golang.org/x/crypto/sha3
 golang.org/x/crypto/ssh/terminal
-golang.org/x/crypto/pbkdf2
-golang.org/x/crypto/hkdf
-golang.org/x/crypto/scrypt
-golang.org/x/crypto/ripemd160
-golang.org/x/crypto/curve25519
-golang.org/x/crypto/blake2s
-golang.org/x/crypto/ed25519
-golang.org/x/crypto/blowfish
-golang.org/x/crypto/ed25519/internal/edwards25519
-# golang.org/x/net v0.0.0-20190424112056-4829fb13d2c6
-golang.org/x/net/websocket
-golang.org/x/net/context
-golang.org/x/net/ipv4
-golang.org/x/net/html/charset
+# golang.org/x/net v0.0.0-20190613194153-d28f0bde5980
 golang.org/x/net/bpf
-golang.org/x/net/internal/iana
-golang.org/x/net/internal/socket
+golang.org/x/net/context
 golang.org/x/net/html
 golang.org/x/net/html/atom
+golang.org/x/net/html/charset
+golang.org/x/net/internal/iana
+golang.org/x/net/internal/socket
+golang.org/x/net/ipv4
+golang.org/x/net/websocket
 # golang.org/x/sync v0.0.0-20190423024810-112230192c58
 golang.org/x/sync/syncmap
-# golang.org/x/sys v0.0.0-20190426135247-a129542de9ae
+# golang.org/x/sys v0.0.0-20191010194322-b09406accb47
 golang.org/x/sys/cpu
 golang.org/x/sys/unix
 golang.org/x/sys/windows
 # golang.org/x/text v0.3.2
-golang.org/x/text/unicode/norm
-golang.org/x/text/transform
 golang.org/x/text/encoding
 golang.org/x/text/encoding/charmap
 golang.org/x/text/encoding/htmlindex
-golang.org/x/text/encoding/internal/identifier
 golang.org/x/text/encoding/internal
+golang.org/x/text/encoding/internal/identifier
 golang.org/x/text/encoding/japanese
 golang.org/x/text/encoding/korean
 golang.org/x/text/encoding/simplifiedchinese
 golang.org/x/text/encoding/traditionalchinese
 golang.org/x/text/encoding/unicode
-golang.org/x/text/language
-golang.org/x/text/internal/utf8internal
-golang.org/x/text/runes
 golang.org/x/text/internal/language
 golang.org/x/text/internal/language/compact
 golang.org/x/text/internal/tag
+golang.org/x/text/internal/utf8internal
+golang.org/x/text/language
+golang.org/x/text/runes
+golang.org/x/text/transform
+golang.org/x/text/unicode/norm
 # gopkg.in/go-playground/validator.v9 v9.9.3
 gopkg.in/go-playground/validator.v9
 # gopkg.in/natefinch/lumberjack.v2 v2.0.0

@@ -13,12 +13,13 @@ require (
 	github.com/golang-migrate/migrate v3.5.4+incompatible // indirect
 	github.com/golang-migrate/migrate/v4 v4.4.0 // indirect
 	github.com/golang/mock v1.2.0
-	github.com/golang/protobuf v1.3.1
+	github.com/golang/protobuf v1.3.2
 	github.com/lib/pq v1.0.0
 	github.com/libp2p/go-libp2p-core v0.0.3
 	github.com/multiformats/go-multiaddr v0.0.4
 	github.com/mutecomm/go-sqlcipher v0.0.0-20170920224653-f799951b4ab2
 	github.com/pborman/uuid v0.0.0-20170112150404-1b00554d8222
+	github.com/prometheus/client_golang v1.2.1
 	github.com/russolsen/ohyeah v0.0.0-20160324131710-f4938c005315 // indirect
 	github.com/russolsen/same v0.0.0-20160222130632-f089df61f51d // indirect
 	github.com/russolsen/transit v0.0.0-20180705123435-0794b4c4505a
