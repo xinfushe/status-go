@@ -25,6 +25,7 @@ import (
 	gethbridge "github.com/status-im/status-protocol-go/bridge/geth"
 	"github.com/status-im/status-protocol-go/encryption/multidevice"
 	"github.com/status-im/status-protocol-go/ens"
+	"github.com/status-im/status-protocol-go/protobuf"
 	statustransp "github.com/status-im/status-protocol-go/transport/whisper"
 	whispertypes "github.com/status-im/status-protocol-go/transport/whisper/types"
 	statusproto_types "github.com/status-im/status-protocol-go/types"
@@ -655,6 +656,11 @@ func (api *PublicAPI) SaveMessages(messages []*statusproto.Message) error {
 
 func (api *PublicAPI) DeleteMessage(id string) error {
 	return api.service.messenger.DeleteMessage(id)
+}
+
+func (api *PublicAPI) SendChatMessage(ctx context.Context, chatID string, text string, responseTo string, ensName string, contentType protobuf.ChatMessage_ContentType) (*statusproto.MessengerResponse, error) {
+	return api.service.messenger.SendChatMessage(ctx, chatID, text, responseTo, ensName, contentType)
+
 }
 
 func (api *PublicAPI) DeleteMessagesByChatID(id string) error {

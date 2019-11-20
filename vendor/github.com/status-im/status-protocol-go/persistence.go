@@ -157,7 +157,7 @@ func (db sqlitePersistence) chats(tx *sql.Tx) (chats []*Chat, err error) {
 
 	for rows.Next() {
 		var (
-			lastMessageContentType sql.NullInt32
+			lastMessageContentType sql.NullInt64
 			lastMessageContent     sql.NullString
 			lastMessageTimestamp   sql.NullInt64
 			lastMessageClockValue  sql.NullInt64
@@ -189,7 +189,7 @@ func (db sqlitePersistence) chats(tx *sql.Tx) (chats []*Chat, err error) {
 			return
 		}
 		chat.LastMessageContent = lastMessageContent.String
-		chat.LastMessageContentType = lastMessageContentType.Int32
+		chat.LastMessageContentType = int32(lastMessageContentType.Int64)
 		chat.LastMessageTimestamp = lastMessageTimestamp.Int64
 		chat.LastMessageClockValue = lastMessageClockValue.Int64
 
