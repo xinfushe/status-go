@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/sha1"
 	"encoding/hex"
+	"encoding/json"
 
 	"github.com/status-im/status-go/eth-node/crypto"
 	"github.com/status-im/status-go/eth-node/types"
@@ -42,17 +43,27 @@ type Chat struct {
 	DeletedAtClockValue uint64 `json:"deletedAtClockValue"`
 
 	// Denormalized fields
-	UnviewedMessagesCount  uint   `json:"unviewedMessagesCount"`
-	LastMessageContentType string `json:"lastMessageContentType"`
-	LastMessageContent     string `json:"lastMessageContent"`
-	LastMessageTimestamp   int64  `json:"lastMessageTimestamp"`
-	LastMessageClockValue  int64  `json:"lastMessageClockValue"`
+	UnviewedMessagesCount uint   `json:"unviewedMessagesCount"`
+	LastMessage           []byte `json:"lastMessage"`
 
 	// Group chat fields
 	// Members are the members who have been invited to the group chat
 	Members []ChatMember `json:"members"`
 	// MembershipUpdates is all the membership events in the chat
 	MembershipUpdates []ChatMembershipUpdate `json:"membershipUpdates"`
+}
+
+func (c *Chat) MarshalJSON() ([]byte, error) {
+	type ChatAlias Chat
+	item := struct {
+		*ChatAlias
+		LastMessage json.RawMessage `json:"lastMessage"`
+	}{
+		ChatAlias:   (*ChatAlias)(c),
+		LastMessage: c.LastMessage,
+	}
+
+	return json.Marshal(item)
 }
 
 func (c *Chat) MembersAsPublicKeys() ([]*ecdsa.PublicKey, error) {
