@@ -2,6 +2,7 @@ package generator
 
 import (
 	"crypto/ecdsa"
+	"crypto/sha256"
 
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/status-im/status-go/extkeys"
@@ -25,9 +26,12 @@ func (a *account) toAccountInfo() AccountInfo {
 
 func (a *account) toIdentifiedAccountInfo(id string) IdentifiedAccountInfo {
 	info := a.toAccountInfo()
+	keyUID := sha256.Sum256(crypto.FromECDSAPub(&a.privateKey.PublicKey))
+	keyUIDHex := statusproto.EncodeHex(keyUID[:])
 	return IdentifiedAccountInfo{
 		AccountInfo: info,
 		ID:          id,
+		KeyUID:      keyUIDHex,
 	}
 }
 
@@ -48,7 +52,8 @@ type AccountInfo struct {
 // IdentifiedAccountInfo contains AccountInfo and the ID of an account.
 type IdentifiedAccountInfo struct {
 	AccountInfo
-	ID string `json:"id"`
+	ID     string `json:"id"`
+	KeyUID string `json:"keyUid"`
 }
 
 // GeneratedAccountInfo contains IdentifiedAccountInfo and the mnemonic of an account.
