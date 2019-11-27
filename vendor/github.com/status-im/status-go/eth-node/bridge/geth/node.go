@@ -20,6 +20,10 @@ func NewNodeBridge(stack *node.Node) types.Node {
 	return &gethNodeWrapper{stack: stack}
 }
 
+func (w *gethNodeWrapper) Poll() {
+	// noop
+}
+
 func (w *gethNodeWrapper) NewENSVerifier(logger *zap.Logger) enstypes.ENSVerifier {
 	return gethens.NewVerifier(logger)
 }

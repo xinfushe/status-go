@@ -1,53 +1,43 @@
-// +build !nimbus
+// +build nimbus
 
 package api
 
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
-	"math/big"
 	"path/filepath"
 	"sync"
 	"time"
 
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
-	ethcrypto "github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/pkg/errors"
+
 	"github.com/ethereum/go-ethereum/event"
+
 	"github.com/ethereum/go-ethereum/log"
-	gethnode "github.com/ethereum/go-ethereum/node"
-	"github.com/ethereum/go-ethereum/p2p/enode"
 
 	"github.com/status-im/status-go/account"
 	"github.com/status-im/status-go/appdatabase"
 	"github.com/status-im/status-go/eth-node/crypto"
 	"github.com/status-im/status-go/eth-node/types"
 	"github.com/status-im/status-go/logutils"
-	"github.com/status-im/status-go/mailserver/registry"
 	"github.com/status-im/status-go/multiaccounts"
 	"github.com/status-im/status-go/multiaccounts/accounts"
 	"github.com/status-im/status-go/node"
 	"github.com/status-im/status-go/params"
 	"github.com/status-im/status-go/rpc"
 	accountssvc "github.com/status-im/status-go/services/accounts"
-	"github.com/status-im/status-go/services/browsers"
-	"github.com/status-im/status-go/services/mailservers"
-	"github.com/status-im/status-go/services/permissions"
 	"github.com/status-im/status-go/services/personal"
 	"github.com/status-im/status-go/services/rpcfilters"
 	"github.com/status-im/status-go/services/subscriptions"
 	"github.com/status-im/status-go/services/typeddata"
-	"github.com/status-im/status-go/services/wallet"
 	"github.com/status-im/status-go/signal"
 	"github.com/status-im/status-go/transactions"
 )
 
-const (
-	contractQueryTimeout = 1000 * time.Millisecond
-)
+// const (
+// 	contractQueryTimeout = 1000 * time.Millisecond
+// )
 
 var (
 	// ErrWhisperClearIdentitiesFailure clearing whisper identities has failed.
@@ -61,20 +51,22 @@ var (
 	ErrRPCClientUnavailable = errors.New("JSON-RPC client is unavailable")
 )
 
-var _ StatusBackend = (*GethStatusBackend)(nil)
+var _ StatusBackend = (*nimbusStatusBackend)(nil)
 
-// GethStatusBackend implements the Status.im service over go-ethereum
-type GethStatusBackend struct {
+// nimbusStatusBackend implements the Status.im service over Nimbus
+type nimbusStatusBackend struct {
+	StatusBackend
+
 	mu sync.Mutex
 	// rootDataDir is the same for all networks.
-	rootDataDir             string
-	appDB                   *sql.DB
-	statusNode              *node.StatusNode
-	personalAPI             *personal.PublicAPI
-	rpcFilters              *rpcfilters.Service
-	multiaccountsDB         *multiaccounts.Database
-	accountManager          *account.GethManager
-	transactor              *transactions.Transactor
+	rootDataDir string
+	appDB       *sql.DB
+	statusNode  *node.StatusNode
+	// personalAPI     *personal.PublicAPI
+	// rpcFilters      *rpcfilters.Service
+	multiaccountsDB *multiaccounts.Database
+	accountManager  *account.Manager
+	// transactor      *transactions.Transactor
 	connectionState         connectionState
 	appState                appState
 	selectedAccountShhKeyID string
@@ -82,68 +74,69 @@ type GethStatusBackend struct {
 	allowAllRPC             bool // used only for tests, disables api method restrictions
 }
 
-// NewGethStatusBackend create a new GethStatusBackend instance
-func NewGethStatusBackend() *GethStatusBackend {
-	defer log.Info("Status backend initialized", "backend", "geth", "version", params.Version, "commit", params.GitCommit)
+// NewNimbusStatusBackend create a new nimbusStatusBackend instance
+func NewNimbusStatusBackend() *nimbusStatusBackend {
+	defer log.Info("Status backend initialized", "backend", "nimbus", "version", params.Version, "commit", params.GitCommit)
 
 	statusNode := node.New()
 	accountManager := account.NewManager()
-	transactor := transactions.NewTransactor()
-	personalAPI := personal.NewAPI()
-	rpcFilters := rpcfilters.New(statusNode)
-	return &GethStatusBackend{
+	// transactor := transactions.NewTransactor()
+	// personalAPI := personal.NewAPI()
+	// rpcFilters := rpcfilters.New(statusNode)
+	return &nimbusStatusBackend{
 		statusNode:     statusNode,
 		accountManager: accountManager,
-		transactor:     transactor,
-		personalAPI:    personalAPI,
-		rpcFilters:     rpcFilters,
-		log:            log.New("package", "status-go/api.GethStatusBackend"),
+		// transactor:     transactor,
+		// personalAPI:    personalAPI,
+		// rpcFilters:     rpcFilters,
+		log: log.New("package", "status-go/api.nimbusStatusBackend"),
 	}
 }
 
 // StatusNode returns reference to node manager
-func (b *GethStatusBackend) StatusNode() *node.StatusNode {
+func (b *nimbusStatusBackend) StatusNode() *node.StatusNode {
 	return b.statusNode
 }
 
 // AccountManager returns reference to account manager
-func (b *GethStatusBackend) AccountManager() *account.GethManager {
+func (b *nimbusStatusBackend) AccountManager() *account.Manager {
 	return b.accountManager
 }
 
-// Transactor returns reference to a status transactor
-func (b *GethStatusBackend) Transactor() *transactions.Transactor {
-	return b.transactor
-}
+// // Transactor returns reference to a status transactor
+// func (b *nimbusStatusBackend) Transactor() *transactions.Transactor {
+// 	return b.transactor
+// }
 
 // SelectedAccountShhKeyID returns a Whisper key ID of the selected chat key pair.
-func (b *GethStatusBackend) SelectedAccountShhKeyID() string {
+func (b *nimbusStatusBackend) SelectedAccountShhKeyID() string {
 	return b.selectedAccountShhKeyID
 }
 
 // IsNodeRunning confirm that node is running
-func (b *GethStatusBackend) IsNodeRunning() bool {
+func (b *nimbusStatusBackend) IsNodeRunning() bool {
 	return b.statusNode.IsRunning()
 }
 
 // StartNode start Status node, fails if node is already started
-func (b *GethStatusBackend) StartNode(config *params.NodeConfig) error {
+func (b *nimbusStatusBackend) StartNode(config *params.NodeConfig) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if err := b.startNode(config); err != nil {
 		signal.SendNodeCrashed(err)
 		return err
 	}
+
 	return nil
 }
 
-func (b *GethStatusBackend) UpdateRootDataDir(datadir string) {
+func (b *nimbusStatusBackend) UpdateRootDataDir(datadir string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.rootDataDir = datadir
 }
 
-func (b *GethStatusBackend) OpenAccounts() error {
+func (b *nimbusStatusBackend) OpenAccounts() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.multiaccountsDB != nil {
@@ -157,7 +150,7 @@ func (b *GethStatusBackend) OpenAccounts() error {
 	return nil
 }
 
-func (b *GethStatusBackend) GetAccounts() ([]multiaccounts.Account, error) {
+func (b *nimbusStatusBackend) GetAccounts() ([]multiaccounts.Account, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.multiaccountsDB == nil {
@@ -166,7 +159,7 @@ func (b *GethStatusBackend) GetAccounts() ([]multiaccounts.Account, error) {
 	return b.multiaccountsDB.GetAccounts()
 }
 
-func (b *GethStatusBackend) SaveAccount(account multiaccounts.Account) error {
+func (b *nimbusStatusBackend) SaveAccount(account multiaccounts.Account) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.multiaccountsDB == nil {
@@ -175,7 +168,7 @@ func (b *GethStatusBackend) SaveAccount(account multiaccounts.Account) error {
 	return b.multiaccountsDB.SaveAccount(account)
 }
 
-func (b *GethStatusBackend) ensureAppDBOpened(account multiaccounts.Account, password string) (err error) {
+func (b *nimbusStatusBackend) ensureAppDBOpened(account multiaccounts.Account, password string) (err error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.appDB != nil {
@@ -196,7 +189,7 @@ func (b *GethStatusBackend) ensureAppDBOpened(account multiaccounts.Account, pas
 // and uses it in application.
 // TODO: we should use a proper struct with optional values instead of duplicating the regular functions
 // with small variants for keycard, this created too many bugs
-func (b *GethStatusBackend) startNodeWithKey(acc multiaccounts.Account, password string, keyHex string) error {
+func (b *nimbusStatusBackend) startNodeWithKey(acc multiaccounts.Account, password string, keyHex string) error {
 	err := b.ensureAppDBOpened(acc, password)
 	if err != nil {
 		return err
@@ -208,6 +201,7 @@ func (b *GethStatusBackend) startNodeWithKey(acc multiaccounts.Account, password
 	if err := logutils.OverrideRootLogWithConfig(conf, false); err != nil {
 		return err
 	}
+
 	accountsDB := accounts.NewDB(b.appDB)
 	walletAddr, err := accountsDB.GetWalletAddress()
 	if err != nil {
@@ -217,7 +211,7 @@ func (b *GethStatusBackend) startNodeWithKey(acc multiaccounts.Account, password
 	if err != nil {
 		return err
 	}
-	chatKey, err := ethcrypto.HexToECDSA(keyHex)
+	chatKey, err := crypto.HexToECDSA(keyHex)
 	if err != nil {
 		return err
 	}
@@ -242,7 +236,7 @@ func (b *GethStatusBackend) startNodeWithKey(acc multiaccounts.Account, password
 	return nil
 }
 
-func (b *GethStatusBackend) StartNodeWithKey(acc multiaccounts.Account, password string, keyHex string) error {
+func (b *nimbusStatusBackend) StartNodeWithKey(acc multiaccounts.Account, password string, keyHex string) error {
 	err := b.startNodeWithKey(acc, password, keyHex)
 	if err != nil {
 		// Stop node for clean up
@@ -252,7 +246,7 @@ func (b *GethStatusBackend) StartNodeWithKey(acc multiaccounts.Account, password
 	return err
 }
 
-func (b *GethStatusBackend) startNodeWithAccount(acc multiaccounts.Account, password string) error {
+func (b *nimbusStatusBackend) startNodeWithAccount(acc multiaccounts.Account, password string) error {
 	err := b.ensureAppDBOpened(acc, password)
 	if err != nil {
 		return err
@@ -298,7 +292,7 @@ func (b *GethStatusBackend) startNodeWithAccount(acc multiaccounts.Account, pass
 	return nil
 }
 
-func (b *GethStatusBackend) StartNodeWithAccount(acc multiaccounts.Account, password string) error {
+func (b *nimbusStatusBackend) StartNodeWithAccount(acc multiaccounts.Account, password string) error {
 	err := b.startNodeWithAccount(acc, password)
 	if err != nil {
 		// Stop node for clean up
@@ -308,7 +302,7 @@ func (b *GethStatusBackend) StartNodeWithAccount(acc multiaccounts.Account, pass
 	return err
 }
 
-func (b *GethStatusBackend) SaveAccountAndStartNodeWithKey(acc multiaccounts.Account, password string, settings accounts.Settings, nodecfg *params.NodeConfig, subaccs []accounts.Account, keyHex string) error {
+func (b *nimbusStatusBackend) SaveAccountAndStartNodeWithKey(acc multiaccounts.Account, password string, settings accounts.Settings, nodecfg *params.NodeConfig, subaccs []accounts.Account, keyHex string) error {
 	err := b.SaveAccount(acc)
 	if err != nil {
 		return err
@@ -327,7 +321,7 @@ func (b *GethStatusBackend) SaveAccountAndStartNodeWithKey(acc multiaccounts.Acc
 // StartNodeWithAccountAndConfig is used after account and config was generated.
 // In current setup account name and config is generated on the client side. Once/if it will be generated on
 // status-go side this flow can be simplified.
-func (b *GethStatusBackend) StartNodeWithAccountAndConfig(
+func (b *nimbusStatusBackend) StartNodeWithAccountAndConfig(
 	account multiaccounts.Account,
 	password string,
 	settings accounts.Settings,
@@ -349,7 +343,7 @@ func (b *GethStatusBackend) StartNodeWithAccountAndConfig(
 	return b.StartNodeWithAccount(account, password)
 }
 
-func (b *GethStatusBackend) saveAccountsAndSettings(settings accounts.Settings, nodecfg *params.NodeConfig, subaccs []accounts.Account) error {
+func (b *nimbusStatusBackend) saveAccountsAndSettings(settings accounts.Settings, nodecfg *params.NodeConfig, subaccs []accounts.Account) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	accdb := accounts.NewDB(b.appDB)
@@ -360,7 +354,7 @@ func (b *GethStatusBackend) saveAccountsAndSettings(settings accounts.Settings, 
 	return accdb.SaveAccounts(subaccs)
 }
 
-func (b *GethStatusBackend) loadNodeConfig() (*params.NodeConfig, error) {
+func (b *nimbusStatusBackend) loadNodeConfig() (*params.NodeConfig, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	var conf params.NodeConfig
@@ -375,88 +369,89 @@ func (b *GethStatusBackend) loadNodeConfig() (*params.NodeConfig, error) {
 	return &conf, nil
 }
 
-func (b *GethStatusBackend) rpcFiltersService() gethnode.ServiceConstructor {
-	return func(*gethnode.ServiceContext) (gethnode.Service, error) {
+func (b *nimbusStatusBackend) rpcFiltersService() node.ServiceConstructor {
+	return func(*node.ServiceContext) (node.Service, error) {
 		return rpcfilters.New(b.statusNode), nil
 	}
 }
 
-func (b *GethStatusBackend) subscriptionService() gethnode.ServiceConstructor {
-	return func(*gethnode.ServiceContext) (gethnode.Service, error) {
+func (b *nimbusStatusBackend) subscriptionService() node.ServiceConstructor {
+	return func(*node.ServiceContext) (node.Service, error) {
 		return subscriptions.New(b.statusNode), nil
 	}
 }
 
-func (b *GethStatusBackend) accountsService(accountsFeed *event.Feed) gethnode.ServiceConstructor {
-	return func(*gethnode.ServiceContext) (gethnode.Service, error) {
-		return accountssvc.NewService(accounts.NewDB(b.appDB), b.multiaccountsDB, b.accountManager.Manager, accountsFeed), nil
+func (b *nimbusStatusBackend) accountsService(accountsFeed *event.Feed) node.ServiceConstructor {
+	return func(*node.ServiceContext) (node.Service, error) {
+		return accountssvc.NewService(accounts.NewDB(b.appDB), b.multiaccountsDB, b.accountManager, accountsFeed), nil
 	}
 }
 
-func (b *GethStatusBackend) browsersService() gethnode.ServiceConstructor {
-	return func(*gethnode.ServiceContext) (gethnode.Service, error) {
-		return browsers.NewService(browsers.NewDB(b.appDB)), nil
-	}
-}
+// func (b *nimbusStatusBackend) browsersService() node.ServiceConstructor {
+// 	return func(*node.ServiceContext) (node.Service, error) {
+// 		return browsers.NewService(browsers.NewDB(b.appDB)), nil
+// 	}
+// }
 
-func (b *GethStatusBackend) permissionsService() gethnode.ServiceConstructor {
-	return func(*gethnode.ServiceContext) (gethnode.Service, error) {
-		return permissions.NewService(permissions.NewDB(b.appDB)), nil
-	}
-}
+// func (b *nimbusStatusBackend) permissionsService() node.ServiceConstructor {
+// 	return func(*node.ServiceContext) (node.Service, error) {
+// 		return permissions.NewService(permissions.NewDB(b.appDB)), nil
+// 	}
+// }
 
-func (b *GethStatusBackend) mailserversService() gethnode.ServiceConstructor {
-	return func(*gethnode.ServiceContext) (gethnode.Service, error) {
-		return mailservers.NewService(mailservers.NewDB(b.appDB)), nil
-	}
-}
+// func (b *nimbusStatusBackend) mailserversService() node.ServiceConstructor {
+// 	return func(*node.ServiceContext) (node.Service, error) {
+// 		return mailservers.NewService(mailservers.NewDB(b.appDB)), nil
+// 	}
+// }
 
-func (b *GethStatusBackend) walletService(network uint64, accountsFeed *event.Feed) gethnode.ServiceConstructor {
-	return func(*gethnode.ServiceContext) (gethnode.Service, error) {
-		return wallet.NewService(wallet.NewDB(b.appDB, network), accountsFeed), nil
-	}
-}
+// func (b *nimbusStatusBackend) walletService(network uint64, accountsFeed *event.Feed) node.ServiceConstructor {
+// 	return func(*node.ServiceContext) (node.Service, error) {
+// 		return wallet.NewService(wallet.NewDB(b.appDB, network), accountsFeed), nil
+// 	}
+// }
 
-func (b *GethStatusBackend) startNode(config *params.NodeConfig) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("node crashed on start: %v", err)
-		}
-	}()
+func (b *nimbusStatusBackend) startNode(config *params.NodeConfig) (err error) {
+	// defer func() {
+	// 	if r := recover(); r != nil {
+	// 		err = fmt.Errorf("node crashed on start: %v", err)
+	// 	}
+	// }()
 
 	// Start by validating configuration
 	if err := config.Validate(); err != nil {
 		return err
 	}
+
 	accountsFeed := &event.Feed{}
-	services := []gethnode.ServiceConstructor{}
+	services := []node.ServiceConstructor{}
 	services = appendIf(config.UpstreamConfig.Enabled, services, b.rpcFiltersService())
 	services = append(services, b.subscriptionService())
 	services = appendIf(b.appDB != nil && b.multiaccountsDB != nil, services, b.accountsService(accountsFeed))
-	services = appendIf(config.BrowsersConfig.Enabled, services, b.browsersService())
-	services = appendIf(config.PermissionsConfig.Enabled, services, b.permissionsService())
-	services = appendIf(config.MailserversConfig.Enabled, services, b.mailserversService())
-	services = appendIf(config.WalletConfig.Enabled, services, b.walletService(config.NetworkID, accountsFeed))
+	// services = appendIf(config.BrowsersConfig.Enabled, services, b.browsersService())
+	// services = appendIf(config.PermissionsConfig.Enabled, services, b.permissionsService())
+	// services = appendIf(config.MailserversConfig.Enabled, services, b.mailserversService())
+	// services = appendIf(config.WalletConfig.Enabled, services, b.walletService(config.NetworkID, accountsFeed))
 
-	manager := b.accountManager.GetManager()
-	if manager == nil {
-		return errors.New("ethereum accounts.Manager is nil")
-	}
+	// manager := b.accountManager.GetManager()
+	// if manager == nil {
+	// 	return errors.New("ethereum accounts.Manager is nil")
+	// }
 	if err = b.statusNode.StartWithOptions(config, node.StartOptions{
 		Services: services,
 		// The peers discovery protocols are started manually after
 		// `node.ready` signal is sent.
 		// It was discussed in https://github.com/status-im/status-go/pull/1333.
 		StartDiscovery:  false,
-		AccountsManager: manager,
+		AccountsManager: nil, //manager,
 	}); err != nil {
 		return
 	}
 	signal.SendNodeStarted()
 
-	b.transactor.SetNetworkID(config.NetworkID)
-	b.transactor.SetRPC(b.statusNode.RPCClient(), rpc.DefaultCallTimeout)
-	b.personalAPI.SetRPC(b.statusNode.RPCPrivateClient(), rpc.DefaultCallTimeout)
+	// b.transactor.SetNetworkID(config.NetworkID)
+	// b.transactor.SetRPC(b.statusNode.RPCClient(), rpc.DefaultCallTimeout)
+	// b.personalAPI.SetRPC(b.statusNode.RPCPrivateClient(), rpc.DefaultCallTimeout)
 
 	if err = b.registerHandlers(); err != nil {
 		b.log.Error("Handler registration failed", "err", err)
@@ -468,9 +463,9 @@ func (b *GethStatusBackend) startNode(config *params.NodeConfig) (err error) {
 		st.SetAccountManager(b.accountManager)
 	}
 
-	if st, err := b.statusNode.PeerService(); err == nil {
-		st.SetDiscoverer(b.StatusNode())
-	}
+	// if st, err := b.statusNode.PeerService(); err == nil {
+	// 	st.SetDiscoverer(b.StatusNode())
+	// }
 
 	// Handle a case when a node is stopped and resumed.
 	// If there is no account selected, an error is returned.
@@ -484,21 +479,21 @@ func (b *GethStatusBackend) startNode(config *params.NodeConfig) (err error) {
 
 	signal.SendNodeReady()
 
-	if err := b.statusNode.StartDiscovery(); err != nil {
-		return err
-	}
+	// if err := b.statusNode.StartDiscovery(); err != nil {
+	// 	return err
+	// }
 
 	return nil
 }
 
 // StopNode stop Status node. Stopped node cannot be resumed.
-func (b *GethStatusBackend) StopNode() error {
+func (b *nimbusStatusBackend) StopNode() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.stopNode()
 }
 
-func (b *GethStatusBackend) stopNode() error {
+func (b *nimbusStatusBackend) stopNode() error {
 	if !b.IsNodeRunning() {
 		return node.ErrNoRunningNode
 	}
@@ -507,40 +502,42 @@ func (b *GethStatusBackend) stopNode() error {
 }
 
 // RestartNode restart running Status node, fails if node is not running
-func (b *GethStatusBackend) RestartNode() error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+func (b *nimbusStatusBackend) RestartNode() error {
+	panic("RestartNode")
+	// b.mu.Lock()
+	// defer b.mu.Unlock()
 
-	if !b.IsNodeRunning() {
-		return node.ErrNoRunningNode
-	}
+	// if !b.IsNodeRunning() {
+	// 	return node.ErrNoRunningNode
+	// }
 
-	newcfg := *(b.statusNode.Config())
-	if err := b.stopNode(); err != nil {
-		return err
-	}
-	return b.startNode(&newcfg)
+	// newcfg := *(b.statusNode.Config())
+	// if err := b.stopNode(); err != nil {
+	// 	return err
+	// }
+	// return b.startNode(&newcfg)
 }
 
 // ResetChainData remove chain data from data directory.
 // Node is stopped, and new node is started, with clean data directory.
-func (b *GethStatusBackend) ResetChainData() error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	newcfg := *(b.statusNode.Config())
-	if err := b.stopNode(); err != nil {
-		return err
-	}
-	// config is cleaned when node is stopped
-	if err := b.statusNode.ResetChainData(&newcfg); err != nil {
-		return err
-	}
-	signal.SendChainDataRemoved()
-	return b.startNode(&newcfg)
+func (b *nimbusStatusBackend) ResetChainData() error {
+	panic("ResetChainData")
+	// b.mu.Lock()
+	// defer b.mu.Unlock()
+	// newcfg := *(b.statusNode.Config())
+	// if err := b.stopNode(); err != nil {
+	// 	return err
+	// }
+	// // config is cleaned when node is stopped
+	// if err := b.statusNode.ResetChainData(&newcfg); err != nil {
+	// 	return err
+	// }
+	// signal.SendChainDataRemoved()
+	// return b.startNode(&newcfg)
 }
 
 // CallRPC executes public RPC requests on node's in-proc RPC server.
-func (b *GethStatusBackend) CallRPC(inputJSON string) (string, error) {
+func (b *nimbusStatusBackend) CallRPC(inputJSON string) (string, error) {
 	client := b.statusNode.RPCClient()
 	if client == nil {
 		return "", ErrRPCClientUnavailable
@@ -549,41 +546,42 @@ func (b *GethStatusBackend) CallRPC(inputJSON string) (string, error) {
 }
 
 // GetNodesFromContract returns a list of nodes from the contract
-func (b *GethStatusBackend) GetNodesFromContract(rpcEndpoint string, contractAddress string) ([]string, error) {
-	var response []string
+func (b *nimbusStatusBackend) GetNodesFromContract(rpcEndpoint string, contractAddress string) ([]string, error) {
+	panic("GetNodesFromContract")
+	// var response []string
 
-	ctx, cancel := context.WithTimeout(context.Background(), contractQueryTimeout)
-	defer cancel()
+	// ctx, cancel := context.WithTimeout(context.Background(), contractQueryTimeout)
+	// defer cancel()
 
-	ethclient, err := ethclient.DialContext(ctx, rpcEndpoint)
-	if err != nil {
-		return response, err
-	}
+	// ethclient, err := ethclient.DialContext(ctx, rpcEndpoint)
+	// if err != nil {
+	// 	return response, err
+	// }
 
-	contract, err := registry.NewNodes(common.HexToAddress(contractAddress), ethclient)
-	if err != nil {
-		return response, err
-	}
+	// contract, err := registry.NewNodes(types.HexToAddress(contractAddress), ethclient)
+	// if err != nil {
+	// 	return response, err
+	// }
 
-	nodeCount, err := contract.NodeCount(nil)
-	if err != nil {
-		return response, err
-	}
+	// nodeCount, err := contract.NodeCount(nil)
+	// if err != nil {
+	// 	return response, err
+	// }
 
-	one := big.NewInt(1)
-	for i := big.NewInt(0); i.Cmp(nodeCount) < 0; i.Add(i, one) {
-		node, err := contract.Nodes(nil, i)
-		if err != nil {
-			return response, err
-		}
-		response = append(response, node)
-	}
+	// one := big.NewInt(1)
+	// for i := big.NewInt(0); i.Cmp(nodeCount) < 0; i.Add(i, one) {
+	// 	node, err := contract.Nodes(nil, i)
+	// 	if err != nil {
+	// 		return response, err
+	// 	}
+	// 	response = append(response, node)
+	// }
 
-	return response, nil
+	// return response, nil
 }
 
 // CallPrivateRPC executes public and private RPC requests on node's in-proc RPC server.
-func (b *GethStatusBackend) CallPrivateRPC(inputJSON string) (string, error) {
+func (b *nimbusStatusBackend) CallPrivateRPC(inputJSON string) (string, error) {
 	client := b.statusNode.RPCPrivateClient()
 	if client == nil {
 		return "", ErrRPCClientUnavailable
@@ -592,107 +590,114 @@ func (b *GethStatusBackend) CallPrivateRPC(inputJSON string) (string, error) {
 }
 
 // SendTransaction creates a new transaction and waits until it's complete.
-func (b *GethStatusBackend) SendTransaction(sendArgs transactions.SendTxArgs, password string) (hash types.Hash, err error) {
-	verifiedAccount, err := b.getVerifiedWalletAccount(sendArgs.From.String(), password)
-	if err != nil {
-		return hash, err
-	}
+func (b *nimbusStatusBackend) SendTransaction(sendArgs transactions.SendTxArgs, password string) (hash types.Hash, err error) {
+	panic("SendTransaction")
+	// verifiedAccount, err := b.getVerifiedWalletAccount(sendArgs.From.String(), password)
+	// if err != nil {
+	// 	return hash, err
+	// }
 
-	hash, err = b.transactor.SendTransaction(sendArgs, verifiedAccount)
-	if err != nil {
-		return
-	}
+	// hash, err = b.transactor.SendTransaction(sendArgs, verifiedAccount)
+	// if err != nil {
+	// 	return
+	// }
 
-	go b.rpcFilters.TriggerTransactionSentToUpstreamEvent(hash)
+	// go b.rpcFilters.TriggerTransactionSentToUpstreamEvent(hash)
 
-	return
+	// return
 }
 
-func (b *GethStatusBackend) SendTransactionWithSignature(sendArgs transactions.SendTxArgs, sig []byte) (hash types.Hash, err error) {
-	hash, err = b.transactor.SendTransactionWithSignature(sendArgs, sig)
-	if err != nil {
-		return
-	}
+func (b *nimbusStatusBackend) SendTransactionWithSignature(sendArgs transactions.SendTxArgs, sig []byte) (hash types.Hash, err error) {
+	panic("SendTransactionWithSignature")
+	// hash, err = b.transactor.SendTransactionWithSignature(sendArgs, sig)
+	// if err != nil {
+	// 	return
+	// }
 
-	go b.rpcFilters.TriggerTransactionSentToUpstreamEvent(hash)
+	// go b.rpcFilters.TriggerTransactionSentToUpstreamEvent(hash)
 
-	return
+	// return
 }
 
 // HashTransaction validate the transaction and returns new sendArgs and the transaction hash.
-func (b *GethStatusBackend) HashTransaction(sendArgs transactions.SendTxArgs) (transactions.SendTxArgs, types.Hash, error) {
-	return b.transactor.HashTransaction(sendArgs)
+func (b *nimbusStatusBackend) HashTransaction(sendArgs transactions.SendTxArgs) (transactions.SendTxArgs, types.Hash, error) {
+	panic("HashTransaction")
+	// return b.transactor.HashTransaction(sendArgs)
 }
 
 // SignMessage checks the pwd vs the selected account and passes on the signParams
 // to personalAPI for message signature
-func (b *GethStatusBackend) SignMessage(rpcParams personal.SignParams) (types.HexBytes, error) {
-	verifiedAccount, err := b.getVerifiedWalletAccount(rpcParams.Address, rpcParams.Password)
-	if err != nil {
-		return types.HexBytes{}, err
-	}
-	return b.personalAPI.Sign(rpcParams, verifiedAccount)
+func (b *nimbusStatusBackend) SignMessage(rpcParams personal.SignParams) (types.HexBytes, error) {
+	panic("SignMessage")
+	// verifiedAccount, err := b.getVerifiedWalletAccount(rpcParams.Address, rpcParams.Password)
+	// if err != nil {
+	// 	return types.Bytes{}, err
+	// }
+	// return b.personalAPI.Sign(rpcParams, verifiedAccount)
 }
 
 // Recover calls the personalAPI to return address associated with the private
 // key that was used to calculate the signature in the message
-func (b *GethStatusBackend) Recover(rpcParams personal.RecoverParams) (types.Address, error) {
-	return b.personalAPI.Recover(rpcParams)
+func (b *nimbusStatusBackend) Recover(rpcParams personal.RecoverParams) (types.Address, error) {
+	panic("Recover")
+	// return b.personalAPI.Recover(rpcParams)
 }
 
 // SignTypedData accepts data and password. Gets verified account and signs typed data.
-func (b *GethStatusBackend) SignTypedData(typed typeddata.TypedData, address string, password string) (types.HexBytes, error) {
-	account, err := b.getVerifiedWalletAccount(address, password)
-	if err != nil {
-		return types.HexBytes{}, err
-	}
-	chain := new(big.Int).SetUint64(b.StatusNode().Config().NetworkID)
-	sig, err := typeddata.Sign(typed, account.AccountKey.PrivateKey, chain)
-	if err != nil {
-		return types.HexBytes{}, err
-	}
-	return types.HexBytes(sig), err
+func (b *nimbusStatusBackend) SignTypedData(typed typeddata.TypedData, address string, password string) (types.HexBytes, error) {
+	panic("SignTypedData")
+	// account, err := b.getVerifiedWalletAccount(address, password)
+	// if err != nil {
+	// 	return types.Bytes{}, err
+	// }
+	// chain := new(big.Int).SetUint64(b.StatusNode().Config().NetworkID)
+	// sig, err := typeddata.Sign(typed, account.AccountKey.PrivateKey, chain)
+	// if err != nil {
+	// 	return types.Bytes{}, err
+	// }
+	// return types.Bytes(sig), err
 }
 
 // HashTypedData generates the hash of TypedData.
-func (b *GethStatusBackend) HashTypedData(typed typeddata.TypedData) (types.Hash, error) {
-	chain := new(big.Int).SetUint64(b.StatusNode().Config().NetworkID)
-	hash, err := typeddata.ValidateAndHash(typed, chain)
-	if err != nil {
-		return types.Hash{}, err
-	}
-	return types.Hash(hash), err
+func (b *nimbusStatusBackend) HashTypedData(typed typeddata.TypedData) (types.Hash, error) {
+	panic("HashTypedData")
+	// chain := new(big.Int).SetUint64(b.StatusNode().Config().NetworkID)
+	// hash, err := typeddata.ValidateAndHash(typed, chain)
+	// if err != nil {
+	// 	return types.Hash{}, err
+	// }
+	// return types.Hash(hash), err
 }
 
-func (b *GethStatusBackend) getVerifiedWalletAccount(address, password string) (*account.SelectedExtKey, error) {
-	config := b.StatusNode().Config()
+// func (b *nimbusStatusBackend) getVerifiedWalletAccount(address, password string) (*account.SelectedExtKey, error) {
+// 	config := b.StatusNode().Config()
 
-	db := accounts.NewDB(b.appDB)
-	exists, err := db.AddressExists(types.HexToAddress(address))
-	if err != nil {
-		b.log.Error("failed to query db for a given address", "address", address, "error", err)
-		return nil, err
-	}
+// 	db := accounts.NewDB(b.appDB)
+// 	exists, err := db.AddressExists(types.HexToAddress(address))
+// 	if err != nil {
+// 		b.log.Error("failed to query db for a given address", "address", address, "error", err)
+// 		return nil, err
+// 	}
 
-	if !exists {
-		b.log.Error("failed to get a selected account", "err", transactions.ErrInvalidTxSender)
-		return nil, transactions.ErrAccountDoesntExist
-	}
+// 	if !exists {
+// 		b.log.Error("failed to get a selected account", "err", transactions.ErrInvalidTxSender)
+// 		return nil, transactions.ErrAccountDoesntExist
+// 	}
 
-	key, err := b.accountManager.VerifyAccountPassword(config.KeyStoreDir, address, password)
-	if err != nil {
-		b.log.Error("failed to verify account", "account", address, "error", err)
-		return nil, err
-	}
+// 	key, err := b.accountManager.VerifyAccountPassword(config.KeyStoreDir, address, password)
+// 	if err != nil {
+// 		b.log.Error("failed to verify account", "account", address, "error", err)
+// 		return nil, err
+// 	}
 
-	return &account.SelectedExtKey{
-		Address:    key.Address,
-		AccountKey: key,
-	}, nil
-}
+// 	return &account.SelectedExtKey{
+// 		Address:    key.Address,
+// 		AccountKey: key,
+// 	}, nil
+// }
 
 // registerHandlers attaches Status callback handlers to running node
-func (b *GethStatusBackend) registerHandlers() error {
+func (b *nimbusStatusBackend) registerHandlers() error {
 	var clients []*rpc.Client
 
 	if c := b.StatusNode().RPCClient(); c != nil {
@@ -732,7 +737,7 @@ func unsupportedMethodHandler(ctx context.Context, rpcParams ...interface{}) (in
 }
 
 // ConnectionChange handles network state changes logic.
-func (b *GethStatusBackend) ConnectionChange(typ string, expensive bool) {
+func (b *nimbusStatusBackend) ConnectionChange(typ string, expensive bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -754,7 +759,7 @@ func (b *GethStatusBackend) ConnectionChange(typ string, expensive bool) {
 
 // AppStateChange handles app state changes (background/foreground).
 // state values: see https://facebook.github.io/react-native/docs/appstate.html
-func (b *GethStatusBackend) AppStateChange(state string) {
+func (b *nimbusStatusBackend) AppStateChange(state string) {
 	s, err := parseAppState(state)
 	if err != nil {
 		log.Error("AppStateChange failed, ignoring", "error", err)
@@ -769,7 +774,7 @@ func (b *GethStatusBackend) AppStateChange(state string) {
 }
 
 // Logout clears whisper identities.
-func (b *GethStatusBackend) Logout() error {
+func (b *nimbusStatusBackend) Logout() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -782,41 +787,41 @@ func (b *GethStatusBackend) Logout() error {
 		return err
 	}
 
-	b.AccountManager().Logout()
+	b.accountManager.Logout()
 
 	return nil
 }
 
 // cleanupServices stops parts of services that doesn't managed by a node and removes injected data from services.
-func (b *GethStatusBackend) cleanupServices() error {
+func (b *nimbusStatusBackend) cleanupServices() error {
 	whisperService, err := b.statusNode.WhisperService()
 	switch err {
 	case node.ErrServiceUnknown: // Whisper was never registered
 	case nil:
-		if err := whisperService.DeleteKeyPairs(); err != nil {
+		if err := whisperService.Whisper.DeleteKeyPairs(); err != nil {
 			return fmt.Errorf("%s: %v", ErrWhisperClearIdentitiesFailure, err)
 		}
 		b.selectedAccountShhKeyID = ""
 	default:
 		return err
 	}
-	if b.statusNode.Config().WalletConfig.Enabled {
-		wallet, err := b.statusNode.WalletService()
-		switch err {
-		case node.ErrServiceUnknown:
-		case nil:
-			err = wallet.StopReactor()
-			if err != nil {
-				return err
-			}
-		default:
-			return err
-		}
-	}
+	// if b.statusNode.Config().WalletConfig.Enabled {
+	// 	wallet, err := b.statusNode.WalletService()
+	// 	switch err {
+	// 	case node.ErrServiceUnknown:
+	// 	case nil:
+	// 		err = wallet.StopReactor()
+	// 		if err != nil {
+	// 			return err
+	// 		}
+	// 	default:
+	// 		return err
+	// 	}
+	// }
 	return nil
 }
 
-func (b *GethStatusBackend) closeAppDB() error {
+func (b *nimbusStatusBackend) closeAppDB() error {
 	if b.appDB != nil {
 		err := b.appDB.Close()
 		if err != nil {
@@ -831,11 +836,11 @@ func (b *GethStatusBackend) closeAppDB() error {
 // SelectAccount selects current wallet and chat accounts, by verifying that each address has corresponding account which can be decrypted
 // using provided password. Once verification is done, the decrypted chat key is injected into Whisper (as a single identity,
 // all previous identities are removed).
-func (b *GethStatusBackend) SelectAccount(loginParams account.LoginParams) error {
+func (b *nimbusStatusBackend) SelectAccount(loginParams account.LoginParams) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	b.AccountManager().RemoveOnboarding()
+	b.accountManager.RemoveOnboarding()
 
 	err := b.accountManager.SelectAccount(loginParams)
 	if err != nil {
@@ -846,14 +851,14 @@ func (b *GethStatusBackend) SelectAccount(loginParams account.LoginParams) error
 		return err
 	}
 
-	if err := b.startWallet(); err != nil {
-		return err
-	}
+	// if err := b.startWallet(); err != nil {
+	// 	return err
+	// }
 
 	return nil
 }
 
-func (b *GethStatusBackend) injectAccountIntoServices() error {
+func (b *nimbusStatusBackend) injectAccountIntoServices() error {
 	chatAccount, err := b.accountManager.SelectedChatAccount()
 	if err != nil {
 		return err
@@ -865,10 +870,10 @@ func (b *GethStatusBackend) injectAccountIntoServices() error {
 	switch err {
 	case node.ErrServiceUnknown: // Whisper was never registered
 	case nil:
-		if err := whisperService.DeleteKeyPairs(); err != nil { // err is not possible; method return value is incorrect
+		if err := whisperService.Whisper.DeleteKeyPairs(); err != nil { // err is not possible; method return value is incorrect
 			return err
 		}
-		b.selectedAccountShhKeyID, err = whisperService.AddKeyPair(identity)
+		b.selectedAccountShhKeyID, err = whisperService.Whisper.AddKeyPair(identity)
 		if err != nil {
 			return ErrWhisperIdentityInjectionFailure
 		}
@@ -889,52 +894,48 @@ func (b *GethStatusBackend) injectAccountIntoServices() error {
 	return nil
 }
 
-func (b *GethStatusBackend) startWallet() error {
-	if !b.statusNode.Config().WalletConfig.Enabled {
-		return nil
-	}
+// func (b *nimbusStatusBackend) startWallet() error {
+// 	if !b.statusNode.Config().WalletConfig.Enabled {
+// 		return nil
+// 	}
 
-	wallet, err := b.statusNode.WalletService()
-	if err != nil {
-		return err
-	}
+// 	wallet, err := b.statusNode.WalletService()
+// 	if err != nil {
+// 		return err
+// 	}
 
-	watchAddresses := b.accountManager.WatchAddresses()
-	mainAccountAddress, err := b.accountManager.MainAccountAddress()
-	if err != nil {
-		return err
-	}
+// 	watchAddresses := b.accountManager.WatchAddresses()
+// 	mainAccountAddress, err := b.accountManager.MainAccountAddress()
+// 	if err != nil {
+// 		return err
+// 	}
 
-	allAddresses := make([]common.Address, len(watchAddresses)+1)
-	allAddresses[0] = common.Address(mainAccountAddress)
-	for i, addr := range watchAddresses {
-		allAddresses[1+i] = common.Address(addr)
-	}
-	return wallet.StartReactor(
-		b.statusNode.RPCClient().Ethclient(),
-		allAddresses,
-		new(big.Int).SetUint64(b.statusNode.Config().NetworkID),
-	)
-}
+// 	allAddresses := make([]types.Address, len(watchAddresses)+1)
+// 	allAddresses[0] = mainAccountAddress
+// 	copy(allAddresses[1:], watchAddresses)
+// 	return wallet.StartReactor(
+// 		b.statusNode.RPCClient().Ethclient(),
+// 		allAddresses,
+// 		new(big.Int).SetUint64(b.statusNode.Config().NetworkID),
+//	)
+// }
 
 // InjectChatAccount selects the current chat account using chatKeyHex and injects the key into whisper.
-// TODO: change the interface and omit the last argument.
-func (b *GethStatusBackend) InjectChatAccount(chatKeyHex, _ string) error {
+func (b *nimbusStatusBackend) InjectChatAccount(chatKeyHex, _ string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	b.accountManager.Logout()
 
-	chatKey, err := ethcrypto.HexToECDSA(chatKeyHex)
+	chatKey, err := crypto.HexToECDSA(chatKeyHex)
 	if err != nil {
 		return err
 	}
 	b.accountManager.SetChatAccount(chatKey)
-
 	return b.injectAccountIntoServices()
 }
 
-func appendIf(condition bool, services []gethnode.ServiceConstructor, service gethnode.ServiceConstructor) []gethnode.ServiceConstructor {
+func appendIf(condition bool, services []node.ServiceConstructor, service node.ServiceConstructor) []node.ServiceConstructor {
 	if !condition {
 		return services
 	}
@@ -942,22 +943,23 @@ func appendIf(condition bool, services []gethnode.ServiceConstructor, service ge
 }
 
 // ExtractGroupMembershipSignatures extract signatures from tuples of content/signature
-func (b *GethStatusBackend) ExtractGroupMembershipSignatures(signaturePairs [][2]string) ([]string, error) {
+func (b *nimbusStatusBackend) ExtractGroupMembershipSignatures(signaturePairs [][2]string) ([]string, error) {
 	return crypto.ExtractSignatures(signaturePairs)
 }
 
 // SignGroupMembership signs a piece of data containing membership information
-func (b *GethStatusBackend) SignGroupMembership(content string) (string, error) {
-	selectedChatAccount, err := b.accountManager.SelectedChatAccount()
-	if err != nil {
-		return "", err
-	}
+func (b *nimbusStatusBackend) SignGroupMembership(content string) (string, error) {
+	panic("SignGroupMembership")
+	// selectedChatAccount, err := b.accountManager.SelectedChatAccount()
+	// if err != nil {
+	// 	return "", err
+	// }
 
-	return crypto.SignStringAsHex(content, selectedChatAccount.AccountKey.PrivateKey)
+	// return crypto.Sign(content, selectedChatAccount.AccountKey.PrivateKey)
 }
 
 // EnableInstallation enables an installation for multi-device sync.
-func (b *GethStatusBackend) EnableInstallation(installationID string) error {
+func (b *nimbusStatusBackend) EnableInstallation(installationID string) error {
 	st, err := b.statusNode.ShhExtService()
 	if err != nil {
 		return err
@@ -972,7 +974,7 @@ func (b *GethStatusBackend) EnableInstallation(installationID string) error {
 }
 
 // DisableInstallation disables an installation for multi-device sync.
-func (b *GethStatusBackend) DisableInstallation(installationID string) error {
+func (b *nimbusStatusBackend) DisableInstallation(installationID string) error {
 	st, err := b.statusNode.ShhExtService()
 	if err != nil {
 		return err
@@ -987,39 +989,42 @@ func (b *GethStatusBackend) DisableInstallation(installationID string) error {
 }
 
 // UpdateMailservers on ShhExtService.
-func (b *GethStatusBackend) UpdateMailservers(enodes []string) error {
-	st, err := b.statusNode.ShhExtService()
-	if err != nil {
-		return err
-	}
-	nodes := make([]*enode.Node, len(enodes))
-	for i, rawurl := range enodes {
-		node, err := enode.ParseV4(rawurl)
-		if err != nil {
-			return err
-		}
-		nodes[i] = node
-	}
-	return st.UpdateMailservers(nodes)
+func (b *nimbusStatusBackend) UpdateMailservers(enodes []string) error {
+	// TODO
+	return nil
+	// st, err := b.statusNode.ShhExtService()
+	// if err != nil {
+	// 	return err
+	// }
+	// nodes := make([]*enode.Node, len(enodes))
+	// for i, rawurl := range enodes {
+	// 	node, err := enode.ParseV4(rawurl)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// 	nodes[i] = node
+	// }
+	// return st.UpdateMailservers(nodes)
 }
 
 // SignHash exposes vanilla ECDSA signing for signing a message for Swarm
-func (b *GethStatusBackend) SignHash(hexEncodedHash string) (string, error) {
-	hash, err := hexutil.Decode(hexEncodedHash)
-	if err != nil {
-		return "", fmt.Errorf("SignHash: could not unmarshal the input: %v", err)
-	}
+func (b *nimbusStatusBackend) SignHash(hexEncodedHash string) (string, error) {
+	panic("SignHash")
+	// hash, err := types.DecodeHex(hexEncodedHash)
+	// if err != nil {
+	// 	return "", fmt.Errorf("SignHash: could not unmarshal the input: %v", err)
+	// }
 
-	chatAccount, err := b.accountManager.SelectedChatAccount()
-	if err != nil {
-		return "", fmt.Errorf("SignHash: could not select account: %v", err.Error())
-	}
+	// chatAccount, err := b.accountManager.SelectedChatAccount()
+	// if err != nil {
+	// 	return "", fmt.Errorf("SignHash: could not select account: %v", err.Error())
+	// }
 
-	signature, err := ethcrypto.Sign(hash, chatAccount.AccountKey.PrivateKey)
-	if err != nil {
-		return "", fmt.Errorf("SignHash: could not sign the hash: %v", err)
-	}
+	// signature, err := ethcrypto.Sign(hash, chatAccount.AccountKey.PrivateKey)
+	// if err != nil {
+	// 	return "", fmt.Errorf("SignHash: could not sign the hash: %v", err)
+	// }
 
-	hexEncodedSignature := types.EncodeHex(signature)
-	return hexEncodedSignature, nil
+	// hexEncodedSignature := types.EncodeHex(signature)
+	// return hexEncodedSignature, nil
 }

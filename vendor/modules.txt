@@ -283,6 +283,8 @@ github.com/lucasb-eyer/go-colorful
 github.com/mattn/go-colorable
 # github.com/mattn/go-isatty v0.0.7
 github.com/mattn/go-isatty
+# github.com/mattn/go-pointer v0.0.0-20190911064623-a0a44394634f
+github.com/mattn/go-pointer
 # github.com/mattn/go-runewidth v0.0.4
 github.com/mattn/go-runewidth
 # github.com/matttproud/golang_protobuf_extensions v1.0.1
@@ -372,6 +374,7 @@ github.com/status-im/rendezvous/server
 # github.com/status-im/status-go/eth-node v1.0.0 => ./eth-node
 github.com/status-im/status-go/eth-node/bridge/geth
 github.com/status-im/status-go/eth-node/bridge/geth/ens
+github.com/status-im/status-go/eth-node/bridge/nimbus
 github.com/status-im/status-go/eth-node/crypto
 github.com/status-im/status-go/eth-node/crypto/ecies
 github.com/status-im/status-go/eth-node/keystore

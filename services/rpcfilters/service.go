@@ -50,6 +50,11 @@ func (s *Service) APIs() []rpc.API {
 	}
 }
 
+// StartService is run when a service is started.
+func (s *Service) StartService() error {
+	return s.Start(nil)
+}
+
 // Start is run when a service is started.
 func (s *Service) Start(server *p2p.Server) error {
 	s.quit = make(chan struct{})

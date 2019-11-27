@@ -32,6 +32,10 @@ func (w *NodeService) APIs() []rpc.API {
 	}
 }
 
+func (w *NodeService) StartService() error {
+	return nil
+}
+
 // Start is run when a service is started.
 // It does nothing in this case but is required by `node.Service` interface.
 func (w *NodeService) Start(server *p2p.Server) error {

@@ -24,6 +24,11 @@ type Service struct {
 }
 
 // Start a service.
+func (s *Service) StartService() error {
+	return nil
+}
+
+// Start a service.
 func (s *Service) Start(*p2p.Server) error {
 	return nil
 }

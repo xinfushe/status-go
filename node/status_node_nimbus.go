@@ -1,0 +1,1124 @@
+// +build nimbus
+
+package node
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/syndtr/goleveldb/leveldb"
+
+	"github.com/ethereum/go-ethereum/accounts"
+	"github.com/ethereum/go-ethereum/event"
+	"github.com/ethereum/go-ethereum/log"
+	gethrpc "github.com/ethereum/go-ethereum/rpc"
+
+	"github.com/status-im/status-go/db"
+	nimbusbridge "github.com/status-im/status-go/eth-node/bridge/nimbus"
+	"github.com/status-im/status-go/eth-node/crypto"
+	"github.com/status-im/status-go/eth-node/types"
+	"github.com/status-im/status-go/params"
+	"github.com/status-im/status-go/rpc"
+	"github.com/status-im/status-go/services/nodebridge"
+	"github.com/status-im/status-go/services/shhext"
+	"github.com/status-im/status-go/services/status"
+	"github.com/status-im/status-go/timesource"
+)
+
+// // tickerResolution is the delta to check blockchain sync progress.
+// const tickerResolution = time.Second
+
+// errors
+var (
+	ErrNodeRunning = errors.New("node is already running")
+	//ErrNoGethNode             = errors.New("geth node is not available")
+	ErrNodeStopped            = errors.New("node not started")
+	ErrNoRunningNode          = errors.New("there is no running node")
+	ErrAccountKeyStoreMissing = errors.New("account key store is not set")
+	ErrServiceUnknown         = errors.New("service unknown")
+	ErrDiscoveryRunning       = errors.New("discovery is already running")
+)
+
+// Errors related to node and services creation.
+var (
+	// ErrNodeMakeFailureFormat                      = "error creating p2p node: %s"
+	ErrWhisperServiceRegistrationFailure = errors.New("failed to register the Whisper service")
+	// ErrLightEthRegistrationFailure                = errors.New("failed to register the LES service")
+	ErrLightEthRegistrationFailureUpstreamEnabled = errors.New("failed to register the LES service, upstream is also configured")
+	// ErrPersonalServiceRegistrationFailure         = errors.New("failed to register the personal api service")
+	ErrStatusServiceRegistrationFailure = errors.New("failed to register the Status service")
+	// ErrPeerServiceRegistrationFailure             = errors.New("failed to register the Peer service")
+	// ErrIncentivisationServiceRegistrationFailure  = errors.New("failed to register the Incentivisation service")
+)
+
+// StatusNode abstracts contained geth node and provides helper methods to
+// interact with it.
+type StatusNode struct {
+	mu sync.RWMutex
+
+	//eventmux *event.TypeMux // Event multiplexer used between the services of a stack
+
+	config           *params.NodeConfig // Status node configuration
+	privateKey       *ecdsa.PrivateKey
+	node             nimbusbridge.Node
+	nodeRunning      bool
+	rpcClient        *rpc.Client // reference to public RPC client
+	rpcPrivateClient *rpc.Client // reference to private RPC client (can call private APIs)
+
+	rpcAPIs             []gethrpc.API   // List of APIs currently provided by the node
+	inprocHandler       *gethrpc.Server // In-process RPC request handler to process the API requests
+	inprocPublicHandler *gethrpc.Server // In-process RPC request handler to process the public API requests
+
+	serviceFuncs []ServiceConstructor     // Service constructors (in dependency order)
+	services     map[reflect.Type]Service // Currently running services
+
+	// discovery discovery.Discovery
+	// register  *peers.Register
+	// peerPool  *peers.PeerPool
+	db *leveldb.DB // used as a cache for PeerPool
+
+	//stop chan struct{} // Channel to wait for termination notifications
+	lock sync.RWMutex
+
+	log log.Logger
+}
+
+// DuplicateServiceError is returned during Node startup if a registered service
+// constructor returns a service of the same type that was already started.
+type DuplicateServiceError struct {
+	Kind reflect.Type
+}
+
+// Error generates a textual representation of the duplicate service error.
+func (e *DuplicateServiceError) Error() string {
+	return fmt.Sprintf("duplicate service: %v", e.Kind)
+}
+
+// ServiceContext is a collection of service independent options inherited from
+// the protocol stack, that is passed to all constructors to be optionally used;
+// as well as utility methods to operate on the service environment.
+type ServiceContext struct {
+	config         *params.NodeConfig
+	services       map[reflect.Type]Service // Index of the already constructed services
+	EventMux       *event.TypeMux           // Event multiplexer used for decoupled notifications
+	AccountManager *accounts.Manager        // Account manager created by the node.
+}
+
+// Service retrieves a currently running service registered of a specific type.
+func (ctx *ServiceContext) Service(service interface{}) error {
+	element := reflect.ValueOf(service).Elem()
+	if running, ok := ctx.services[element.Type()]; ok {
+		element.Set(reflect.ValueOf(running))
+		return nil
+	}
+	return ErrServiceUnknown
+}
+
+// ServiceConstructor is the function signature of the constructors needed to be
+// registered for service instantiation.
+type ServiceConstructor func(ctx *ServiceContext) (Service, error)
+
+// Service is an individual protocol that can be registered into a node.
+//
+// Notes:
+//
+// • Service life-cycle management is delegated to the node. The service is allowed to
+// initialize itself upon creation, but no goroutines should be spun up outside of the
+// Start method.
+//
+// • Restart logic is not required as the node will create a fresh instance
+// every time a service is started.
+type Service interface {
+	// APIs retrieves the list of RPC descriptors the service provides
+	APIs() []gethrpc.API
+
+	// StartService is called after all services have been constructed and the networking
+	// layer was also initialized to spawn any goroutines required by the service.
+	StartService() error
+
+	// Stop terminates all goroutines belonging to the service, blocking until they
+	// are all terminated.
+	Stop() error
+}
+
+// New makes new instance of StatusNode.
+func New() *StatusNode {
+	return &StatusNode{
+		//eventmux:          new(event.TypeMux),
+		log: log.New("package", "status-go/node.StatusNode"),
+	}
+}
+
+// Config exposes reference to running node's configuration
+func (n *StatusNode) Config() *params.NodeConfig {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	return n.config
+}
+
+// GethNode returns underlying geth node.
+// func (n *StatusNode) GethNode() *node.Node {
+// 	n.mu.RLock()
+// 	defer n.mu.RUnlock()
+
+// 	return n.gethNode
+// }
+
+// Server retrieves the currently running P2P network layer.
+// func (n *StatusNode) Server() *p2p.Server {
+// 	n.mu.RLock()
+// 	defer n.mu.RUnlock()
+
+// 	if n.gethNode == nil {
+// 		return nil
+// 	}
+
+// 	return n.gethNode.Server()
+// }
+
+// Register injects a new service into the node's stack. The service created by
+// the passed constructor must be unique in its type with regard to sibling ones.
+func (n *StatusNode) Register(constructor ServiceConstructor) error {
+	n.lock.Lock()
+	defer n.lock.Unlock()
+
+	if n.isRunning() {
+		return ErrNodeRunning
+	}
+	n.serviceFuncs = append(n.serviceFuncs, constructor)
+	return nil
+}
+
+// Start starts current StatusNode, failing if it's already started.
+// It accepts a list of services that should be added to the node.
+func (n *StatusNode) Start(config *params.NodeConfig, accs *accounts.Manager, services ...ServiceConstructor) error {
+	panic("Start")
+	return n.StartWithOptions(config, StartOptions{
+		Services:        services,
+		StartDiscovery:  true,
+		AccountsManager: accs,
+	})
+}
+
+// StartOptions allows to control some parameters of Start() method.
+type StartOptions struct {
+	Node            types.Node
+	Services        []ServiceConstructor
+	StartDiscovery  bool
+	AccountsManager *accounts.Manager
+}
+
+// StartWithOptions starts current StatusNode, failing if it's already started.
+// It takes some options that allows to further configure starting process.
+func (n *StatusNode) StartWithOptions(config *params.NodeConfig, options StartOptions) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	if n.isRunning() {
+		n.log.Debug("cannot start, node already running")
+		return ErrNodeRunning
+	}
+
+	n.log.Debug("starting with NodeConfig", "ClusterConfig", config.ClusterConfig)
+
+	db, err := db.Create(config.DataDir, params.StatusDatabase)
+	if err != nil {
+		return fmt.Errorf("failed to create database at %s: %v", config.DataDir, err)
+	}
+
+	n.db = db
+
+	err = n.startWithDB(config, options.AccountsManager, db, options.Services)
+
+	// continue only if there was no error when starting node with a db
+	if err == nil && options.StartDiscovery && n.discoveryEnabled() {
+		// err = n.startDiscovery()
+	}
+
+	if err != nil {
+		if dberr := db.Close(); dberr != nil {
+			n.log.Error("error while closing leveldb after node crash", "error", dberr)
+		}
+		n.db = nil
+		return err
+	}
+
+	return nil
+}
+
+func (n *StatusNode) startWithDB(config *params.NodeConfig, accs *accounts.Manager, db *leveldb.DB, services []ServiceConstructor) error {
+	if err := n.createNode(config, accs, services, db); err != nil {
+		return err
+	}
+
+	if err := n.setupRPCClient(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (n *StatusNode) createNode(config *params.NodeConfig, accs *accounts.Manager, services []ServiceConstructor, db *leveldb.DB) error {
+	var privateKey *ecdsa.PrivateKey
+	if config.NodeKey != "" {
+		var err error
+		privateKey, err = crypto.HexToECDSA(config.NodeKey)
+		if err != nil {
+			return err
+		}
+	}
+
+	n.privateKey = privateKey
+	n.node = nimbusbridge.NewNodeBridge()
+
+	err := n.activateServices(config, accs, db)
+	if err != nil {
+		return err
+	}
+
+	if err = n.start(config, services); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// start starts current StatusNode, will fail if it's already started.
+func (n *StatusNode) start(config *params.NodeConfig, services []ServiceConstructor) error {
+	for _, service := range services {
+		if err := n.Register(service); err != nil {
+			return err
+		}
+	}
+
+	n.config = config
+	n.startServices()
+
+	err := n.node.StartNimbus(n.privateKey, config.ListenAddr, true)
+	n.nodeRunning = err == nil
+	return err
+}
+
+func (n *StatusNode) startServices() error {
+	services := make(map[reflect.Type]Service)
+	for _, constructor := range n.serviceFuncs {
+		// Create a new context for the particular service
+		ctx := &ServiceContext{
+			config:   n.config,
+			services: make(map[reflect.Type]Service),
+			//EventMux:       n.eventmux,
+			//AccountManager: n.accman,
+		}
+		for kind, s := range services { // copy needed for threaded access
+			ctx.services[kind] = s
+		}
+		// Construct and save the service
+		service, err := constructor(ctx)
+		if err != nil {
+			return err
+		}
+		kind := reflect.TypeOf(service)
+		if _, exists := services[kind]; exists {
+			return &DuplicateServiceError{Kind: kind}
+		}
+		services[kind] = service
+	}
+	// Start each of the services
+	var started []reflect.Type
+	for kind, service := range services {
+		// Start the next service, stopping all previous upon failure
+		if err := service.StartService(); err != nil {
+			for _, kind := range started {
+				services[kind].Stop()
+			}
+
+			return err
+		}
+		// Mark the service started for potential cleanup
+		started = append(started, kind)
+	}
+	// Lastly start the configured RPC interfaces
+	if err := n.startRPC(services); err != nil {
+		for _, service := range services {
+			service.Stop()
+		}
+		return err
+	}
+	// Finish initializing the startup
+	n.services = services
+
+	return nil
+}
+
+// startRPC is a helper method to start all the various RPC endpoint during node
+// startup. It's not meant to be called at any time afterwards as it makes certain
+// assumptions about the state of the node.
+func (n *StatusNode) startRPC(services map[reflect.Type]Service) error {
+	// Gather all the possible APIs to surface
+	apis := []gethrpc.API{}
+	for _, service := range services {
+		apis = append(apis, service.APIs()...)
+	}
+
+	// Start the various API endpoints, terminating all in case of errors
+	if err := n.startInProc(apis); err != nil {
+		return err
+	}
+	if err := n.startPublicInProc(apis, n.config.FormatAPIModules()); err != nil {
+		n.stopInProc()
+		return err
+	}
+	// All API endpoints started successfully
+	n.rpcAPIs = apis
+	return nil
+}
+
+func (n *StatusNode) setupRPCClient() (err error) {
+	// setup public RPC client
+	gethNodeClient := gethrpc.DialInProc(n.inprocPublicHandler)
+	n.rpcClient, err = rpc.NewClient(gethNodeClient, n.config.UpstreamConfig)
+	if err != nil {
+		return
+	}
+
+	// setup private RPC client
+	gethNodePrivateClient := gethrpc.DialInProc(n.inprocHandler)
+	n.rpcPrivateClient, err = rpc.NewClient(gethNodePrivateClient, n.config.UpstreamConfig)
+
+	return
+}
+
+// startInProc initializes an in-process RPC endpoint.
+func (n *StatusNode) startInProc(apis []gethrpc.API) error {
+	n.log.Debug("startInProc", "apis", apis)
+	// Register all the APIs exposed by the services
+	handler := gethrpc.NewServer()
+	for _, api := range apis {
+		n.log.Debug("Registering InProc", "namespace", api.Namespace)
+		if err := handler.RegisterName(api.Namespace, api.Service); err != nil {
+			return err
+		}
+		n.log.Debug("InProc registered", "namespace", api.Namespace)
+	}
+	n.inprocHandler = handler
+	return nil
+}
+
+// stopInProc terminates the in-process RPC endpoint.
+func (n *StatusNode) stopInProc() {
+	if n.inprocHandler != nil {
+		n.inprocHandler.Stop()
+		n.inprocHandler = nil
+	}
+}
+
+// startPublicInProc initializes an in-process RPC endpoint for public APIs.
+func (n *StatusNode) startPublicInProc(apis []gethrpc.API, modules []string) error {
+	n.log.Debug("startPublicInProc", "apis", apis, "modules", modules)
+	// Generate the whitelist based on the allowed modules
+	whitelist := make(map[string]bool)
+	for _, module := range modules {
+		whitelist[module] = true
+	}
+
+	// Register all the public APIs exposed by the services
+	handler := gethrpc.NewServer()
+	for _, api := range apis {
+		if whitelist[api.Namespace] || (len(whitelist) == 0 && api.Public) {
+			n.log.Debug("Registering InProc public", "service", api.Service, "namespace", api.Namespace)
+			if err := handler.RegisterName(api.Namespace, api.Service); err != nil {
+				return err
+			}
+			n.log.Debug("InProc public registered", "service", api.Service, "namespace", api.Namespace)
+		}
+	}
+	n.inprocPublicHandler = handler
+	return nil
+}
+
+// stopPublicInProc terminates the in-process RPC endpoint for public APIs.
+func (n *StatusNode) stopPublicInProc() {
+	if n.inprocPublicHandler != nil {
+		n.inprocPublicHandler.Stop()
+		n.inprocPublicHandler = nil
+	}
+}
+
+func (n *StatusNode) activateServices(config *params.NodeConfig, accs *accounts.Manager, db *leveldb.DB) error {
+	// start Ethereum service if we are not expected to use an upstream server
+	if !config.UpstreamConfig.Enabled {
+	} else {
+		if config.LightEthConfig.Enabled {
+			return ErrLightEthRegistrationFailureUpstreamEnabled
+		}
+
+		n.log.Info("LES protocol is disabled")
+
+		// `personal_sign` and `personal_ecRecover` methods are important to
+		// keep DApps working.
+		// Usually, they are provided by an ETH or a LES service, but when using
+		// upstream, we don't start any of these, so we need to start our own
+		// implementation.
+		// if err := n.activatePersonalService(accs, config); err != nil {
+		// 	return fmt.Errorf("%v: %v", ErrPersonalServiceRegistrationFailure, err)
+		// }
+	}
+
+	if err := n.activateNodeServices(config, db); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (n *StatusNode) activateNodeServices(config *params.NodeConfig, db *leveldb.DB) error {
+	// start Whisper service.
+	if err := n.activateShhService(config, db); err != nil {
+		return fmt.Errorf("%v: %v", ErrWhisperServiceRegistrationFailure, err)
+	}
+
+	// start incentivisation service
+	// if err := n.activateIncentivisationService(config); err != nil {
+	// 	return fmt.Errorf("%v: %v", ErrIncentivisationServiceRegistrationFailure, err)
+	// }
+
+	// start status service.
+	if err := n.activateStatusService(config); err != nil {
+		return fmt.Errorf("%v: %v", ErrStatusServiceRegistrationFailure, err)
+	}
+
+	// start peer service
+	// if err := activatePeerService(n); err != nil {
+	// 	return fmt.Errorf("%v: %v", ErrPeerServiceRegistrationFailure, err)
+	// }
+	return nil
+}
+
+// activateShhService configures Whisper and adds it to the given node.
+func (n *StatusNode) activateShhService(config *params.NodeConfig, db *leveldb.DB) (err error) {
+	if !config.WhisperConfig.Enabled {
+		n.log.Info("SHH protocol is disabled")
+		return nil
+	}
+	if config.WhisperConfig.EnableNTPSync {
+		if err = n.Register(func(*ServiceContext) (Service, error) {
+			return timesource.Default(), nil
+		}); err != nil {
+			return
+		}
+	}
+
+	// err = n.Register(func(ctx *ServiceContext) (Service, error) {
+	// 	return n.createShhService(ctx, &config.WhisperConfig, &config.ClusterConfig)
+	// })
+	// if err != nil {
+	// 	return
+	// }
+
+	// Register eth-node node bridge
+	err = n.Register(func(ctx *ServiceContext) (Service, error) {
+		return &nodebridge.NodeService{Node: n.node}, nil
+	})
+	if err != nil {
+		return
+	}
+
+	// Register Whisper eth-node bridge
+	err = n.Register(func(ctx *ServiceContext) (Service, error) {
+		n.log.Info("Creating WhisperService")
+
+		var ethnode *nodebridge.NodeService
+		if err := ctx.Service(&ethnode); err != nil {
+			return nil, err
+		}
+
+		w, err := ethnode.Node.GetWhisper(ctx)
+		if err != nil {
+			n.log.Error("GetWhisper", "err", err)
+			return nil, err
+		}
+
+		return &nodebridge.WhisperService{Whisper: w}, nil
+	})
+	if err != nil {
+		return
+	}
+
+	// TODO(dshulyak) add a config option to enable it by default, but disable if app is started from statusd
+	return n.Register(func(ctx *ServiceContext) (Service, error) {
+		var ethnode *nodebridge.NodeService
+		if err := ctx.Service(&ethnode); err != nil {
+			return nil, err
+		}
+		return shhext.New(ethnode.Node, ctx, db, config.ShhextConfig), nil
+	})
+}
+
+func (n *StatusNode) activateStatusService(config *params.NodeConfig) error {
+	if !config.EnableStatusService {
+		n.log.Info("Status service api is disabled")
+		return nil
+	}
+
+	return n.Register(func(ctx *ServiceContext) (Service, error) {
+		var service *nodebridge.WhisperService
+		if err := ctx.Service(&service); err != nil {
+			return nil, err
+		}
+		svc := status.New(service.Whisper)
+		return svc, nil
+	})
+}
+
+func (n *StatusNode) schedulePolling(pollFunc func(), delay time.Duration, cancel <-chan struct{}) {
+	n.log.Info("schedulePolling")
+	if pollFunc != nil {
+		// Start a worker goroutine to periodically schedule polling on the UI thread
+		go func() {
+			n.log.Info("schedulePolling go routine")
+			for {
+				select {
+				case <-time.After(delay):
+					n.log.Info("calling pollFunc")
+					pollFunc()
+				case <-cancel:
+					n.log.Info("cancelling pollFunc")
+					return
+				}
+			}
+		}()
+	}
+}
+
+func (n *StatusNode) discoveryEnabled() bool {
+	return n.config != nil && (!n.config.NoDiscovery || n.config.Rendezvous) && n.config.ClusterConfig.Enabled
+}
+
+// func (n *StatusNode) discoverNode() (*enode.Node, error) {
+// 	if !n.isRunning() {
+// 		return nil, nil
+// 	}
+
+// 	server := n.gethNode.Server()
+// 	discNode := server.Self()
+
+// 	if n.config.AdvertiseAddr == "" {
+// 		return discNode, nil
+// 	}
+
+// 	n.log.Info("Using AdvertiseAddr for rendezvous", "addr", n.config.AdvertiseAddr)
+
+// 	r := discNode.Record()
+// 	r.Set(enr.IP(net.ParseIP(n.config.AdvertiseAddr)))
+// 	if err := enode.SignV4(r, server.PrivateKey); err != nil {
+// 		return nil, err
+// 	}
+// 	return enode.New(enode.ValidSchemes[r.IdentityScheme()], r)
+// }
+
+// func (n *StatusNode) startRendezvous() (discovery.Discovery, error) {
+// 	if !n.config.Rendezvous {
+// 		return nil, errors.New("rendezvous is not enabled")
+// 	}
+// 	if len(n.config.ClusterConfig.RendezvousNodes) == 0 {
+// 		return nil, errors.New("rendezvous node must be provided if rendezvous discovery is enabled")
+// 	}
+// 	maddrs := make([]ma.Multiaddr, len(n.config.ClusterConfig.RendezvousNodes))
+// 	for i, addr := range n.config.ClusterConfig.RendezvousNodes {
+// 		var err error
+// 		maddrs[i], err = ma.NewMultiaddr(addr)
+// 		if err != nil {
+// 			return nil, fmt.Errorf("failed to parse rendezvous node %s: %v", n.config.ClusterConfig.RendezvousNodes[0], err)
+// 		}
+// 	}
+// 	node, err := n.discoverNode()
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to get a discover node: %v", err)
+// 	}
+
+// 	return discovery.NewRendezvous(maddrs, n.gethNode.Server().PrivateKey, node)
+// }
+
+// StartDiscovery starts the peers discovery protocols depending on the node config.
+func (n *StatusNode) StartDiscovery() error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	if n.discoveryEnabled() {
+		// return n.startDiscovery()
+	}
+
+	return nil
+}
+
+// func (n *StatusNode) startDiscovery() error {
+// 	if n.isDiscoveryRunning() {
+// 		return ErrDiscoveryRunning
+// 	}
+
+// 	discoveries := []discovery.Discovery{}
+// 	if !n.config.NoDiscovery {
+// 		discoveries = append(discoveries, discovery.NewDiscV5(
+// 			n.gethNode.Server().PrivateKey,
+// 			n.config.ListenAddr,
+// 			parseNodesV5(n.config.ClusterConfig.BootNodes)))
+// 	}
+// 	if n.config.Rendezvous {
+// 		d, err := n.startRendezvous()
+// 		if err != nil {
+// 			return err
+// 		}
+// 		discoveries = append(discoveries, d)
+// 	}
+// 	if len(discoveries) == 0 {
+// 		return errors.New("wasn't able to register any discovery")
+// 	} else if len(discoveries) > 1 {
+// 		n.discovery = discovery.NewMultiplexer(discoveries)
+// 	} else {
+// 		n.discovery = discoveries[0]
+// 	}
+// 	log.Debug(
+// 		"using discovery",
+// 		"instance", reflect.TypeOf(n.discovery),
+// 		"registerTopics", n.config.RegisterTopics,
+// 		"requireTopics", n.config.RequireTopics,
+// 	)
+// 	n.register = peers.NewRegister(n.discovery, n.config.RegisterTopics...)
+// 	options := peers.NewDefaultOptions()
+// 	// TODO(dshulyak) consider adding a flag to define this behaviour
+// 	options.AllowStop = len(n.config.RegisterTopics) == 0
+// 	options.TrustedMailServers = parseNodesToNodeID(n.config.ClusterConfig.TrustedMailServers)
+
+// 	options.MailServerRegistryAddress = n.config.MailServerRegistryAddress
+
+// 	n.peerPool = peers.NewPeerPool(
+// 		n.discovery,
+// 		n.config.RequireTopics,
+// 		peers.NewCache(n.db),
+// 		options,
+// 	)
+// 	if err := n.discovery.Start(); err != nil {
+// 		return err
+// 	}
+// 	if err := n.register.Start(); err != nil {
+// 		return err
+// 	}
+// 	return n.peerPool.Start(n.gethNode.Server(), n.rpcClient)
+// }
+
+// Stop will stop current StatusNode. A stopped node cannot be resumed.
+func (n *StatusNode) Stop() error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	if !n.isRunning() {
+		return ErrNoRunningNode
+	}
+
+	return n.stop()
+}
+
+// stop will stop current StatusNode. A stopped node cannot be resumed.
+func (n *StatusNode) stop() error {
+	// if n.isDiscoveryRunning() {
+	// 	if err := n.stopDiscovery(); err != nil {
+	// 		n.log.Error("Error stopping the discovery components", "error", err)
+	// 	}
+	// n.register = nil
+	// n.peerPool = nil
+	// n.discovery = nil
+	// }
+
+	// if err := n.gethNode.Stop(); err != nil {
+	// 	return err
+	// }
+
+	n.stopPublicInProc()
+	n.stopInProc()
+	n.rpcClient = nil
+	n.rpcPrivateClient = nil
+	n.rpcAPIs = nil
+	n.services = nil
+	// We need to clear `node` because config is passed to `Start()`
+	// and may be completely different. Similarly with `config`.
+	if n.node != nil {
+		n.node.Stop()
+		n.node = nil
+	}
+	n.nodeRunning = false
+	n.config = nil
+
+	if n.db != nil {
+		err := n.db.Close()
+
+		n.db = nil
+
+		return err
+	}
+
+	return nil
+}
+
+func (n *StatusNode) isDiscoveryRunning() bool {
+	return false //n.register != nil || n.peerPool != nil || n.discovery != nil
+}
+
+// func (n *StatusNode) stopDiscovery() error {
+// 	n.register.Stop()
+// 	n.peerPool.Stop()
+// 	return n.discovery.Stop()
+// }
+
+// ResetChainData removes chain data if node is not running.
+func (n *StatusNode) ResetChainData(config *params.NodeConfig) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	if n.isRunning() {
+		return ErrNodeRunning
+	}
+
+	chainDataDir := filepath.Join(config.DataDir, config.Name, "lightchaindata")
+	if _, err := os.Stat(chainDataDir); os.IsNotExist(err) {
+		return err
+	}
+	err := os.RemoveAll(chainDataDir)
+	if err == nil {
+		n.log.Info("Chain data has been removed", "dir", chainDataDir)
+	}
+	return err
+}
+
+// IsRunning confirm that node is running.
+func (n *StatusNode) IsRunning() bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	return n.isRunning()
+}
+
+func (n *StatusNode) isRunning() bool {
+	return n.node != nil && n.nodeRunning // && n.gethNode.Server() != nil
+}
+
+// populateStaticPeers connects current node with our publicly available LES/SHH/Swarm cluster
+func (n *StatusNode) populateStaticPeers() error {
+	if !n.config.ClusterConfig.Enabled {
+		n.log.Info("Static peers are disabled")
+		return nil
+	}
+
+	for _, enode := range n.config.ClusterConfig.StaticNodes {
+		if err := n.addPeer(enode); err != nil {
+			n.log.Error("Static peer addition failed", "error", err)
+			return err
+		}
+		n.log.Info("Static peer added", "enode", enode)
+	}
+
+	return nil
+}
+
+func (n *StatusNode) removeStaticPeers() error {
+	if !n.config.ClusterConfig.Enabled {
+		n.log.Info("Static peers are disabled")
+		return nil
+	}
+
+	for _, enode := range n.config.ClusterConfig.StaticNodes {
+		if err := n.removePeer(enode); err != nil {
+			n.log.Error("Static peer deletion failed", "error", err)
+			return err
+		}
+		n.log.Info("Static peer deleted", "enode", enode)
+	}
+	return nil
+}
+
+// ReconnectStaticPeers removes and adds static peers to a server.
+func (n *StatusNode) ReconnectStaticPeers() error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	if !n.isRunning() {
+		return ErrNoRunningNode
+	}
+
+	if err := n.removeStaticPeers(); err != nil {
+		return err
+	}
+
+	return n.populateStaticPeers()
+}
+
+// AddPeer adds new static peer node
+func (n *StatusNode) AddPeer(url string) error {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	return n.addPeer(url)
+}
+
+// addPeer adds new static peer node
+func (n *StatusNode) addPeer(url string) error {
+	if !n.isRunning() {
+		return ErrNoRunningNode
+	}
+
+	n.node.AddPeer(url)
+
+	return nil
+}
+
+func (n *StatusNode) removePeer(url string) error {
+	if !n.isRunning() {
+		return ErrNoRunningNode
+	}
+
+	n.node.RemovePeer(url)
+
+	return nil
+}
+
+// PeerCount returns the number of connected peers.
+func (n *StatusNode) PeerCount() int {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	if !n.isRunning() {
+		return 0
+	}
+
+	return 1
+	//return n.gethNode.Server().PeerCount()
+}
+
+// Service retrieves a currently running service registered of a specific type.
+func (n *StatusNode) Service(service interface{}) error {
+	n.lock.RLock()
+	defer n.lock.RUnlock()
+
+	// Short circuit if the node's not running
+	if !n.isRunning() {
+		return ErrNodeStopped
+	}
+	// Otherwise try to find the service to return
+	element := reflect.ValueOf(service).Elem()
+	if running, ok := n.services[element.Type()]; ok {
+		element.Set(reflect.ValueOf(running))
+		return nil
+	}
+	return ErrServiceUnknown
+}
+
+// // LightEthereumService exposes reference to LES service running on top of the node
+// func (n *StatusNode) LightEthereumService() (l *les.LightEthereum, err error) {
+// 	n.mu.RLock()
+// 	defer n.mu.RUnlock()
+
+// 	err = n.Service(&l)
+
+// 	return
+// }
+
+// StatusService exposes reference to status service running on top of the node
+func (n *StatusNode) StatusService() (st *status.Service, err error) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	err = n.Service(&st)
+
+	return
+}
+
+// // PeerService exposes reference to peer service running on top of the node.
+// func (n *StatusNode) PeerService() (st *peer.Service, err error) {
+// 	n.mu.RLock()
+// 	defer n.mu.RUnlock()
+
+// 	err = n.Service(&st)
+
+// 	return
+// }
+
+// WhisperService exposes reference to Whisper service running on top of the node
+func (n *StatusNode) WhisperService() (w *nodebridge.WhisperService, err error) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	err = n.Service(&w)
+
+	return
+}
+
+// ShhExtService exposes reference to shh extension service running on top of the node
+func (n *StatusNode) ShhExtService() (s *shhext.Service, err error) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	err = n.Service(&s)
+
+	return
+}
+
+// // WalletService returns wallet.Service instance if it was started.
+// func (n *StatusNode) WalletService() (s *wallet.Service, err error) {
+// 	n.mu.RLock()
+// 	defer n.mu.RUnlock()
+// 	err = n.Service(&s)
+// 	return
+// }
+
+// // BrowsersService returns browsers.Service instance if it was started.
+// func (n *StatusNode) BrowsersService() (s *browsers.Service, err error) {
+// 	n.mu.RLock()
+// 	defer n.mu.RUnlock()
+// 	err = n.Service(&s)
+// 	return
+// }
+
+// // PermissionsService returns browsers.Service instance if it was started.
+// func (n *StatusNode) PermissionsService() (s *permissions.Service, err error) {
+// 	n.mu.RLock()
+// 	defer n.mu.RUnlock()
+// 	err = n.Service(&s)
+// 	return
+// }
+
+// // AccountManager exposes reference to node's accounts manager
+// func (n *StatusNode) AccountManager() (*accounts.Manager, error) {
+// 	n.mu.RLock()
+// 	defer n.mu.RUnlock()
+
+// 	if n.gethNode == nil {
+// 		return nil, ErrNoGethNode
+// 	}
+
+// 	return n.gethNode.AccountManager(), nil
+// }
+
+// RPCClient exposes reference to RPC client connected to the running node.
+func (n *StatusNode) RPCClient() *rpc.Client {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.rpcClient
+}
+
+// RPCPrivateClient exposes reference to RPC client connected to the running node
+// that can call both public and private APIs.
+func (n *StatusNode) RPCPrivateClient() *rpc.Client {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.rpcPrivateClient
+}
+
+// ChaosModeCheckRPCClientsUpstreamURL updates RPCClient and RPCPrivateClient upstream URLs,
+// if defined, without restarting the node. This is required for the Chaos Unicorn Day.
+// Additionally, if the passed URL is Infura, it changes it to httpstat.us/500.
+func (n *StatusNode) ChaosModeCheckRPCClientsUpstreamURL(on bool) error {
+	url := n.config.UpstreamConfig.URL
+
+	if on {
+		if strings.Contains(url, "infura.io") {
+			url = "https://httpstat.us/500"
+		}
+	}
+
+	publicClient := n.RPCClient()
+	if publicClient != nil {
+		if err := publicClient.UpdateUpstreamURL(url); err != nil {
+			return err
+		}
+	}
+
+	privateClient := n.RPCPrivateClient()
+	if privateClient != nil {
+		if err := privateClient.UpdateUpstreamURL(url); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// EnsureSync waits until blockchain synchronization
+// is complete and returns.
+func (n *StatusNode) EnsureSync(ctx context.Context) error {
+	// Don't wait for any blockchain sync for the
+	// local private chain as blocks are never mined.
+	if n.config.NetworkID == 0 || n.config.NetworkID == params.StatusChainNetworkID {
+		return nil
+	}
+
+	return n.ensureSync(ctx)
+}
+
+func (n *StatusNode) ensureSync(ctx context.Context) error {
+	return errors.New("Sync not implemented")
+	// les, err := n.LightEthereumService()
+	// if err != nil {
+	// 	return fmt.Errorf("failed to get LES service: %v", err)
+	// }
+
+	// downloader := les.Downloader()
+	// if downloader == nil {
+	// 	return errors.New("LightEthereumService downloader is nil")
+	// }
+
+	// progress := downloader.Progress()
+	// if n.PeerCount() > 0 && progress.CurrentBlock >= progress.HighestBlock {
+	// 	n.log.Debug("Synchronization completed", "current block", progress.CurrentBlock, "highest block", progress.HighestBlock)
+	// 	return nil
+	// }
+
+	// ticker := time.NewTicker(tickerResolution)
+	// defer ticker.Stop()
+
+	// progressTicker := time.NewTicker(time.Minute)
+	// defer progressTicker.Stop()
+
+	// for {
+	// 	select {
+	// 	case <-ctx.Done():
+	// 		return errors.New("timeout during node synchronization")
+	// 	case <-ticker.C:
+	// 		if n.PeerCount() == 0 {
+	// 			n.log.Debug("No established connections with any peers, continue waiting for a sync")
+	// 			continue
+	// 		}
+	// 		if downloader.Synchronising() {
+	// 			n.log.Debug("Synchronization is in progress")
+	// 			continue
+	// 		}
+	// 		progress = downloader.Progress()
+	// 		if progress.CurrentBlock >= progress.HighestBlock {
+	// 			n.log.Info("Synchronization completed", "current block", progress.CurrentBlock, "highest block", progress.HighestBlock)
+	// 			return nil
+	// 		}
+	// 		n.log.Debug("Synchronization is not finished", "current", progress.CurrentBlock, "highest", progress.HighestBlock)
+	// 	case <-progressTicker.C:
+	// 		progress = downloader.Progress()
+	// 		n.log.Warn("Synchronization is not finished", "current", progress.CurrentBlock, "highest", progress.HighestBlock)
+	// 	}
+	// }
+}
+
+// // Discover sets up the discovery for a specific topic.
+// func (n *StatusNode) Discover(topic string, max, min int) (err error) {
+// 	if n.peerPool == nil {
+// 		return errors.New("peerPool not running")
+// 	}
+// 	return n.peerPool.UpdateTopic(topic, params.Limits{
+// 		Max: max,
+// 		Min: min,
+// 	})
+// }

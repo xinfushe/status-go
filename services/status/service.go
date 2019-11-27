@@ -60,6 +60,10 @@ func (s *Service) SetAccountManager(a AccountManager) {
 	s.am = a
 }
 
+func (s *Service) StartService() error {
+	return nil
+}
+
 // Start is run when a service is started.
 // It does nothing in this case but is required by `node.Service` interface.
 func (s *Service) Start(server *p2p.Server) error {
