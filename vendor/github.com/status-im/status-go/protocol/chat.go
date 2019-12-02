@@ -8,6 +8,7 @@ import (
 
 	"github.com/status-im/status-go/eth-node/crypto"
 	"github.com/status-im/status-go/eth-node/types"
+	"github.com/status-im/status-go/protocol/protobuf"
 	v1protocol "github.com/status-im/status-go/protocol/v1"
 )
 
@@ -50,7 +51,7 @@ type Chat struct {
 	// Members are the members who have been invited to the group chat
 	Members []ChatMember `json:"members"`
 	// MembershipUpdates is all the membership events in the chat
-	MembershipUpdates []ChatMembershipUpdate `json:"membershipUpdates"`
+	MembershipUpdates []v1protocol.MembershipUpdateEvent `json:"membershipUpdateEvents"`
 }
 
 func (c *Chat) MarshalJSON() ([]byte, error) {
@@ -131,30 +132,15 @@ func (c *Chat) updateChatFromProtocolGroup(g *v1protocol.Group) {
 	c.Members = chatMembers
 
 	// MembershipUpdates
-	updates := g.Updates()
-	membershipUpdates := make([]ChatMembershipUpdate, 0, len(updates))
-	for _, update := range updates {
-		membershipUpdate := ChatMembershipUpdate{
-			Type:       update.Type,
-			Name:       update.Name,
-			ClockValue: uint64(update.ClockValue), // TODO: get rid of type casting
-			Signature:  update.Signature,
-			From:       update.From,
-			Member:     update.Member,
-			Members:    update.Members,
-		}
-		membershipUpdate.setID()
-		membershipUpdates = append(membershipUpdates, membershipUpdate)
-	}
-	c.MembershipUpdates = membershipUpdates
+	c.MembershipUpdates = g.Events()
 }
 
 // ChatMembershipUpdate represent an event on membership of the chat
 type ChatMembershipUpdate struct {
 	// Unique identifier for the event
 	ID string `json:"id"`
-	// Type indicates the kind of event (i.e changed-name, added-member, etc)
-	Type string `json:"type"`
+	// Type indicates the kind of event
+	Type protobuf.MembershipUpdateEvent_EventType `json:"type"`
 	// Name represents the name in the event of changing name events
 	Name string `json:"name,omitempty"`
 	// Clock value of the event

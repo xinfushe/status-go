@@ -288,7 +288,6 @@ func NewMessenger(
 		database,
 		encryptionProtocol,
 		t,
-		newPersistentMessageHandler(&sqlitePersistence{db: database}),
 		logger,
 		c.featureFlags,
 	)
@@ -476,101 +475,308 @@ func (m *Messenger) Join(chat Chat) error {
 	}
 }
 
+// This is not accurate, it should not leave transport on removal of chat/group
+// only once there is no more: Group chat with that member, one-to-one chat, contact added by us
 func (m *Messenger) Leave(chat Chat) error {
-	if chat.PublicKey != nil {
+	switch chat.ChatType {
+	case ChatTypeOneToOne:
 		return m.transport.LeavePrivate(chat.PublicKey)
-	} else if chat.Name != "" {
+	case ChatTypePrivateGroupChat:
+		members, err := chat.MembersAsPublicKeys()
+		if err != nil {
+			return err
+		}
+		return m.transport.LeaveGroup(members)
+	case ChatTypePublic:
 		return m.transport.LeavePublic(chat.Name)
+	default:
+		return errors.New("chat is neither public nor private")
 	}
-	return errors.New("chat is neither public nor private")
 }
 
-// TODO: consider moving to a ChatManager ???
-func (m *Messenger) CreateGroupChat(name string) (*Chat, error) {
+func (m *Messenger) CreateGroupChatWithMembers(ctx context.Context, name string, members []string) (*Chat, error) {
+	logger := m.logger.With(zap.String("site", "CreateGroupChatWithMembers"))
+	logger.Info("Creating group chat", zap.String("name", name), zap.Any("members", members))
 	chat := createGroupChat()
 	group, err := v1protocol.NewGroupWithCreator(name, m.identity)
 	if err != nil {
 		return nil, err
 	}
 	chat.updateChatFromProtocolGroup(group)
-	return &chat, nil
-}
 
-func (m *Messenger) AddMembersToChat(ctx context.Context, chat *Chat, members []*ecdsa.PublicKey) error {
-	group, err := newProtocolGroupFromChat(chat)
+	// Add members
+	event := v1protocol.NewMembersAddedEvent(members, group.NextClockValue())
+	event.ChatID = chat.ID
+	err = event.Sign(m.identity)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	encodedMembers := make([]string, len(members))
-	for idx, member := range members {
-		encodedMembers[idx] = types.EncodeHex(crypto.FromECDSAPub(member))
-	}
-	event := v1protocol.NewMembersAddedEvent(encodedMembers, group.NextClockValue())
-	err = group.ProcessEvent(&m.identity.PublicKey, event)
-	if err != nil {
-		return err
-	}
-	if err := m.propagateMembershipUpdates(ctx, group); err != nil {
-		return err
-	}
-	chat.updateChatFromProtocolGroup(group)
-	return m.SaveChat(*chat)
-}
 
-func (m *Messenger) ConfirmJoiningGroup(ctx context.Context, chat *Chat) error {
-	group, err := newProtocolGroupFromChat(chat)
+	err = group.ProcessEvent(event)
 	if err != nil {
-		return err
-	}
-	event := v1protocol.NewMemberJoinedEvent(
-		types.EncodeHex(crypto.FromECDSAPub(&m.identity.PublicKey)),
-		group.NextClockValue(),
-	)
-	err = group.ProcessEvent(&m.identity.PublicKey, event)
-	if err != nil {
-		return err
-	}
-	if err := m.propagateMembershipUpdates(ctx, group); err != nil {
-		return err
-	}
-	chat.updateChatFromProtocolGroup(group)
-	return m.SaveChat(*chat)
-}
-
-func (m *Messenger) propagateMembershipUpdates(ctx context.Context, group *v1protocol.Group) error {
-	events := make([]v1protocol.MembershipUpdateEvent, len(group.Updates()))
-	for idx, event := range group.Updates() {
-		events[idx] = event.MembershipUpdateEvent
-	}
-	update := v1protocol.MembershipUpdate{
-		ChatID: group.ChatID(),
-		Events: events,
-	}
-	if err := update.Sign(m.identity); err != nil {
-		return err
+		return nil, err
 	}
 	recipients, err := stringSliceToPublicKeys(group.Members(), true)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	// Filter out my key from the recipients
-	n := 0
-	for _, recipient := range recipients {
-		if !isPubKeyEqual(recipient, &m.identity.PublicKey) {
-			recipients[n] = recipient
-			n++
-		}
+
+	if _, err := m.propagateMembershipUpdates(ctx, group, recipients, nil); err != nil {
+		return nil, err
 	}
-	recipients = recipients[:n]
-	// Finally send membership updates to all recipients.
-	_, err = m.processor.SendMembershipUpdate(
-		ctx,
-		recipients,
-		group.ChatID(),
-		[]v1protocol.MembershipUpdate{update},
+	chat.updateChatFromProtocolGroup(group)
+	return &chat, m.SaveChat(chat)
+}
+
+func (m *Messenger) RemoveMemberFromGroupChat(ctx context.Context, chatID string, member string) (*Chat, error) {
+	logger := m.logger.With(zap.String("site", "RemoveMemberFromGroupChat"))
+	logger.Info("Removing member form group chat", zap.String("chatID", chatID), zap.String("member", member))
+	chat, err := m.persistence.Chat(chatID)
+	if err != nil {
+		return nil, err
+	}
+	if chat == nil {
+		return nil, errors.New("can't find chat")
+	}
+
+	group, err := newProtocolGroupFromChat(chat)
+	if err != nil {
+		return nil, err
+	}
+
+	// We save the initial recipients as we want to send updates to also
+	// the members kicked out
+	oldRecipients, err := stringSliceToPublicKeys(group.Members(), true)
+	if err != nil {
+		return nil, err
+	}
+
+	// Remove member
+	event := v1protocol.NewMemberRemovedEvent(member, group.NextClockValue())
+	event.ChatID = chat.ID
+	err = event.Sign(m.identity)
+	if err != nil {
+		return nil, err
+	}
+
+	err = group.ProcessEvent(event)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := m.propagateMembershipUpdates(ctx, group, oldRecipients, nil); err != nil {
+		return nil, err
+	}
+	chat.updateChatFromProtocolGroup(group)
+	return chat, m.SaveChat(*chat)
+}
+
+func (m *Messenger) AddMembersToGroupChat(ctx context.Context, chatID string, members []string) (*Chat, error) {
+	logger := m.logger.With(zap.String("site", "AddMembersFromGroupChat"))
+	logger.Info("Adding members form group chat", zap.String("chatID", chatID), zap.Any("members", members))
+	chat, err := m.persistence.Chat(chatID)
+	if err != nil {
+		return nil, err
+	}
+	if chat == nil {
+		return nil, errors.New("can't find chat")
+	}
+
+	group, err := newProtocolGroupFromChat(chat)
+	if err != nil {
+		return nil, err
+	}
+
+	// Add members
+	event := v1protocol.NewMembersAddedEvent(members, group.NextClockValue())
+	event.ChatID = chat.ID
+	err = event.Sign(m.identity)
+	if err != nil {
+		return nil, err
+	}
+
+	err = group.ProcessEvent(event)
+	if err != nil {
+		return nil, err
+	}
+
+	recipients, err := stringSliceToPublicKeys(group.Members(), true)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := m.propagateMembershipUpdates(ctx, group, recipients, nil); err != nil {
+		return nil, err
+	}
+	chat.updateChatFromProtocolGroup(group)
+	return chat, m.SaveChat(*chat)
+}
+
+func (m *Messenger) AddAdminsToGroupChat(ctx context.Context, chatID string, members []string) (*Chat, error) {
+	logger := m.logger.With(zap.String("site", "AddAdminsToGroupChat"))
+	logger.Info("Add admins to group chat", zap.String("chatID", chatID), zap.Any("members", members))
+	chat, err := m.persistence.Chat(chatID)
+	if err != nil {
+		return nil, err
+	}
+	if chat == nil {
+		return nil, errors.New("can't find chat")
+	}
+
+	group, err := newProtocolGroupFromChat(chat)
+	if err != nil {
+		return nil, err
+	}
+
+	// Add members
+	event := v1protocol.NewAdminsAddedEvent(members, group.NextClockValue())
+	event.ChatID = chat.ID
+	err = event.Sign(m.identity)
+	if err != nil {
+		return nil, err
+	}
+
+	err = group.ProcessEvent(event)
+	if err != nil {
+		return nil, err
+	}
+
+	recipients, err := stringSliceToPublicKeys(group.Members(), true)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := m.propagateMembershipUpdates(ctx, group, recipients, nil); err != nil {
+		return nil, err
+	}
+	chat.updateChatFromProtocolGroup(group)
+	return chat, m.SaveChat(*chat)
+}
+
+func (m *Messenger) ConfirmJoiningGroup(ctx context.Context, chatID string) (*Chat, error) {
+
+	chat, err := m.persistence.Chat(chatID)
+	if err != nil {
+		return nil, err
+	}
+	if chat == nil {
+		return nil, errors.New("can't find chat")
+	}
+
+	err = m.Join(*chat)
+	if err != nil {
+		return nil, err
+	}
+
+	group, err := newProtocolGroupFromChat(chat)
+	if err != nil {
+		return nil, err
+	}
+	event := v1protocol.NewMemberJoinedEvent(
 		group.NextClockValue(),
 	)
-	return err
+	event.ChatID = chat.ID
+	err = event.Sign(m.identity)
+	if err != nil {
+		return nil, err
+	}
+
+	err = group.ProcessEvent(event)
+	if err != nil {
+		return nil, err
+	}
+
+	recipients, err := stringSliceToPublicKeys(group.Members(), true)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := m.propagateMembershipUpdates(ctx, group, recipients, nil); err != nil {
+		return nil, err
+	}
+	chat.updateChatFromProtocolGroup(group)
+	err = m.SaveChat(*chat)
+	if err != nil {
+		return nil, err
+	}
+
+	return chat, nil
+}
+
+func (m *Messenger) LeaveGroupChat(ctx context.Context, chatID string) (*Chat, error) {
+
+	chat, err := m.persistence.Chat(chatID)
+	if err != nil {
+		return nil, err
+	}
+	if chat == nil {
+		return nil, errors.New("can't find chat")
+	}
+
+	err = m.Leave(*chat)
+	if err != nil {
+		return nil, err
+	}
+
+	group, err := newProtocolGroupFromChat(chat)
+	if err != nil {
+		return nil, err
+	}
+	event := v1protocol.NewMemberRemovedEvent(
+		types.EncodeHex(crypto.FromECDSAPub(&m.identity.PublicKey)),
+		group.NextClockValue(),
+	)
+	event.ChatID = chat.ID
+	err = event.Sign(m.identity)
+	if err != nil {
+		return nil, err
+	}
+
+	err = group.ProcessEvent(event)
+	if err != nil {
+		return nil, err
+	}
+
+	recipients, err := stringSliceToPublicKeys(group.Members(), true)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := m.propagateMembershipUpdates(ctx, group, recipients, nil); err != nil {
+		return nil, err
+	}
+	chat.updateChatFromProtocolGroup(group)
+	chat.Active = false
+	err = m.SaveChat(*chat)
+	if err != nil {
+		return nil, err
+	}
+	return chat, nil
+}
+
+func (m *Messenger) propagateMembershipUpdates(ctx context.Context, group *v1protocol.Group, recipients []*ecdsa.PublicKey, chatMessage *protobuf.ChatMessage) ([]byte, error) {
+	hasPairedDevices, err := m.hasPairedDevices()
+	if err != nil {
+		return nil, err
+	}
+
+	if !hasPairedDevices {
+		// Filter out my key from the recipients
+		n := 0
+		for _, recipient := range recipients {
+			if !isPubKeyEqual(recipient, &m.identity.PublicKey) {
+				recipients[n] = recipient
+				n++
+			}
+		}
+		recipients = recipients[:n]
+	}
+	// Finally send membership updates to all recipients.
+	return m.processor.SendMembershipUpdate(
+		ctx,
+		recipients,
+		group,
+		chatMessage,
+	)
 }
 
 func (m *Messenger) SaveChat(chat Chat) error {
@@ -652,19 +858,21 @@ func (m *Messenger) ReSendChatMessage(ctx context.Context, messageID string) (*M
 	case ChatTypeOneToOne:
 		publicKey := crypto.FromECDSAPub(chat.PublicKey)
 		logger.Debug("re-sending private message", zap.Binary("publicKey", publicKey))
-		id, err := m.processor.SendPrivateRaw(ctx, chat.PublicKey, message.RawPayload)
+		id, err := m.processor.SendPrivateRaw(ctx, chat.PublicKey, message.RawPayload, protobuf.ApplicationMetadataMessage_CHAT_MESSAGE)
 		if err != nil {
 			return nil, err
 		}
 		message.ID = "0x" + hex.EncodeToString(id)
-		err = m.sendToPairedDevices(ctx, message.RawPayload)
+		err = m.sendToPairedDevices(ctx, message.RawPayload, protobuf.ApplicationMetadataMessage_CHAT_MESSAGE)
+
 		if err != nil {
 			return nil, err
 		}
 
 	case ChatTypePublic:
 		logger.Debug("re-sending public message", zap.String("chatName", chat.Name))
-		id, err := m.processor.SendPublicRaw(ctx, chat.ID, message.RawPayload)
+		id, err := m.processor.SendPublicRaw(ctx, chat.ID, message.RawPayload, protobuf.ApplicationMetadataMessage_CHAT_MESSAGE)
+
 		if err != nil {
 			return nil, err
 		}
@@ -683,14 +891,16 @@ func (m *Messenger) ReSendChatMessage(ctx context.Context, messageID string) (*M
 				n++
 			}
 		}
-		id, err := m.processor.SendGroupRaw(ctx, recipients[:n], message.RawPayload)
+		id, err := m.processor.SendGroupRaw(ctx, recipients[:n], message.RawPayload, protobuf.ApplicationMetadataMessage_CHAT_MESSAGE)
+
 		if err != nil {
 			return nil, err
 		}
 
 		message.ID = "0x" + hex.EncodeToString(id)
 
-		err = m.sendToPairedDevices(ctx, message.RawPayload)
+		err = m.sendToPairedDevices(ctx, message.RawPayload, protobuf.ApplicationMetadataMessage_CHAT_MESSAGE)
+
 		if err != nil {
 			return nil, err
 		}
@@ -704,15 +914,23 @@ func (m *Messenger) ReSendChatMessage(ctx context.Context, messageID string) (*M
 	return &response, nil
 }
 
-// sendToPairedDevices will check if we have any paired devices and send to them if necessary
-func (m *Messenger) sendToPairedDevices(ctx context.Context, payload []byte) error {
+func (m *Messenger) hasPairedDevices() (bool, error) {
 	activeInstallations, err := m.encryptor.GetOurActiveInstallations(&m.identity.PublicKey)
+	if err != nil {
+		return false, err
+	}
+	return len(activeInstallations) > 1, nil
+}
+
+// sendToPairedDevices will check if we have any paired devices and send to them if necessary
+func (m *Messenger) sendToPairedDevices(ctx context.Context, payload []byte, messageType protobuf.ApplicationMetadataMessage_MessageType) error {
+	hasPairedDevices, err := m.hasPairedDevices()
 	if err != nil {
 		return err
 	}
 	// We send a message to any paired device
-	if len(activeInstallations) > 1 {
-		_, err := m.processor.SendPrivateRaw(ctx, &m.identity.PublicKey, payload)
+	if hasPairedDevices {
+		_, err := m.processor.SendPrivateRaw(ctx, &m.identity.PublicKey, payload, messageType)
 		if err != nil {
 			return err
 		}
@@ -773,13 +991,15 @@ func (m *Messenger) SendChatMessage(ctx context.Context, message *Message) (*Mes
 		}
 		message.RawPayload = encodedMessage
 
-		id, err := m.processor.SendPrivateRaw(ctx, chat.PublicKey, encodedMessage)
+		id, err := m.processor.SendPrivateRaw(ctx, chat.PublicKey, encodedMessage, protobuf.ApplicationMetadataMessage_CHAT_MESSAGE)
+
 		if err != nil {
 			return nil, err
 		}
 		message.ID = "0x" + hex.EncodeToString(id)
 
-		err = m.sendToPairedDevices(ctx, encodedMessage)
+		err = m.sendToPairedDevices(ctx, encodedMessage, protobuf.ApplicationMetadataMessage_CHAT_MESSAGE)
+
 		if err != nil {
 			return nil, err
 		}
@@ -793,7 +1013,8 @@ func (m *Messenger) SendChatMessage(ctx context.Context, message *Message) (*Mes
 		}
 		message.RawPayload = encodedMessage
 
-		id, err := m.processor.SendPublicRaw(ctx, chat.ID, encodedMessage)
+		id, err := m.processor.SendPublicRaw(ctx, chat.ID, encodedMessage, protobuf.ApplicationMetadataMessage_CHAT_MESSAGE)
+
 		if err != nil {
 			return nil, err
 		}
@@ -801,37 +1022,24 @@ func (m *Messenger) SendChatMessage(ctx context.Context, message *Message) (*Mes
 	case ChatTypePrivateGroupChat:
 		logger.Debug("sending public message", zap.String("chatName", chat.Name))
 		message.MessageType = protobuf.ChatMessage_PRIVATE_GROUP
-		encodedMessage, err := proto.Marshal(message)
-		if err != nil {
-			return nil, err
-		}
-		message.RawPayload = encodedMessage
-
 		logger.Debug("sending group message", zap.String("chatName", chat.Name))
 		recipients, err := chat.MembersAsPublicKeys()
 		if err != nil {
 			return nil, err
 		}
 
-		n := 0
-		for _, item := range recipients {
-			if !isPubKeyEqual(item, &m.identity.PublicKey) {
-				recipients[n] = item
-				n++
-			}
-		}
-		id, err := m.processor.SendGroupRaw(ctx, recipients[:n], encodedMessage)
+		group, err := newProtocolGroupFromChat(chat)
 		if err != nil {
 			return nil, err
 		}
 
+		encodedMessage, err := m.propagateMembershipUpdates(ctx, group, recipients, &message.ChatMessage)
+		if err != nil {
+			return nil, err
+		}
+
+		id := v1protocol.MessageID(&m.identity.PublicKey, encodedMessage)
 		message.ID = "0x" + hex.EncodeToString(id)
-
-		err = m.sendToPairedDevices(ctx, encodedMessage)
-		if err != nil {
-			return nil, err
-		}
-
 	default:
 		return nil, errors.New("chat type not supported")
 	}
@@ -867,9 +1075,9 @@ func (m *Messenger) SendChatMessage(ctx context.Context, message *Message) (*Mes
 // DEPRECATED
 func (m *Messenger) SendRaw(ctx context.Context, chat Chat, data []byte) ([]byte, error) {
 	if chat.PublicKey != nil {
-		return m.processor.SendPrivateRaw(ctx, chat.PublicKey, data)
+		return m.processor.SendPrivateRaw(ctx, chat.PublicKey, data, protobuf.ApplicationMetadataMessage_UNKNOWN)
 	} else if chat.Name != "" {
-		return m.processor.SendPublicRaw(ctx, chat.Name, data)
+		return m.processor.SendPublicRaw(ctx, chat.Name, data, protobuf.ApplicationMetadataMessage_UNKNOWN)
 	}
 	return nil, errors.New("chat is neither public nor private")
 }
@@ -885,6 +1093,84 @@ func (m *Messenger) RetrieveAll() (*MessengerResponse, error) {
 	return m.handleRetrievedMessages(chatWithMessages)
 }
 
+type ReceivedMessageState struct {
+	// Message is the protobuf message received
+	Message protobuf.ChatMessage
+	// MessageID is the ID of the message
+	MessageID string
+	// WhisperTimestamp is the whisper timestamp of the message
+	WhisperTimestamp uint64
+	// Contact is the contact associated with the author of the message
+	Contact *Contact
+	// PublicKey is the public key of the author of the message
+	PublicKey *ecdsa.PublicKey
+	// AllChatMap is an index of the chats for faster lookup
+	AllChatsMap map[string]*Chat
+	// List of chats modified
+	ModifiedChats map[string]bool
+	PostProcessor *postProcessor
+}
+
+func (m *Messenger) handleChatMessage(state *ReceivedMessageState) (*Message, error) {
+	receivedMessage := &Message{
+		ID:               state.MessageID,
+		ChatMessage:      state.Message,
+		From:             state.Contact.ID,
+		Alias:            state.Contact.Alias,
+		SigPubKey:        state.PublicKey,
+		Identicon:        state.Contact.Identicon,
+		WhisperTimestamp: state.WhisperTimestamp,
+	}
+	receivedMessage.PrepareContent()
+	chat, err := state.PostProcessor.matchMessage(receivedMessage, state.AllChatsMap)
+	if err != nil {
+		return nil, err
+	}
+
+	// If deleted-at is greater, ignore message
+	if chat.DeletedAtClockValue >= receivedMessage.Clock {
+		return nil, nil
+	}
+
+	// Set the LocalChatID for the message
+	receivedMessage.LocalChatID = chat.ID
+
+	if c, ok := state.AllChatsMap[chat.ID]; ok {
+		chat = c
+	}
+
+	// Set the LocalChatID for the message
+	receivedMessage.LocalChatID = chat.ID
+
+	// Increase unviewed count
+	if !isPubKeyEqual(receivedMessage.SigPubKey, &m.identity.PublicKey) {
+		chat.UnviewedMessagesCount++
+	} else {
+		// Our own message, mark as sent
+		receivedMessage.OutgoingStatus = OutgoingStatusSent
+	}
+
+	// Update chat timestamp
+	chat.Timestamp = int64(timestampInMs())
+	// Update last clock value
+	if chat.LastClockValue <= receivedMessage.Clock {
+		chat.LastClockValue = receivedMessage.Clock
+		encodedLastMessage, err := json.Marshal(receivedMessage)
+		if err != nil {
+			return nil, err
+		}
+		chat.LastMessage = encodedLastMessage
+	}
+
+	// Set chat active
+	chat.Active = true
+	// Set in the modified maps chat
+	state.ModifiedChats[chat.ID] = true
+	state.AllChatsMap[chat.ID] = chat
+
+	return receivedMessage, nil
+}
+
 func (m *Messenger) handleRetrievedMessages(chatWithMessages map[transport.Filter][]*types.Message) (*MessengerResponse, error) {
 	response := &MessengerResponse{
 		Chats:    []*Chat{},
@@ -893,6 +1179,10 @@ func (m *Messenger) handleRetrievedMessages(chatWithMessages map[transport.Filte
 	allChats, err := m.persistence.Chats()
 	if err != nil {
 		return nil, err
+	}
+	allChatsMap := make(map[string]*Chat)
+	for _, chat := range allChats {
+		allChatsMap[chat.ID] = chat
 	}
 
 	postProcessor := newPostProcessor(m, postProcessorConfig{MatchChat: true})
@@ -914,7 +1204,7 @@ func (m *Messenger) handleRetrievedMessages(chatWithMessages map[transport.Filte
 	}
 
 	allContactsMap := make(map[string]*Contact)
-	allChatsMap := make(map[string]*Chat)
+	modifiedChats := make(map[string]bool)
 	existingMessagesMap := make(map[string]bool)
 
 	for chat, messages := range chatWithMessages {
@@ -968,69 +1258,84 @@ func (m *Messenger) handleRetrievedMessages(chatWithMessages map[transport.Filte
 					response.Contacts = append(response.Contacts, c)
 				}
 
+				logger.Info("CHECKING PARSED MESSAGE")
 				if msg.ParsedMessage != nil {
-					if textMessage, ok := msg.ParsedMessage.(protobuf.ChatMessage); ok {
-						receivedMessage := &Message{
-							ID:               messageID,
-							ChatMessage:      textMessage,
-							From:             contact.ID,
-							Alias:            contact.Alias,
-							SigPubKey:        publicKey,
-							Identicon:        contact.Identicon,
-							WhisperTimestamp: uint64(msg.TransportMessage.Timestamp) * 1000,
-						}
-						receivedMessage.PrepareContent()
+					switch msg.ParsedMessage.(type) {
+					case protobuf.MembershipUpdateMessage:
 
-						chat, err := postProcessor.matchMessage(receivedMessage, allChats)
+						logger.Info("GOT RAW MEMBERHS")
+						rawMembershipUpdate := msg.ParsedMessage.(protobuf.MembershipUpdateMessage)
+						membershipUpdate, err := v1protocol.MembershipUpdateMessageFromProtobuf(&rawMembershipUpdate)
 						if err != nil {
-							logger.Warn("failed to match message", zap.String("receivedChatID", receivedMessage.ChatId), zap.Error(err))
+							logger.Warn("failed to process membership update", zap.Error(err))
+							continue
+
+						}
+
+						chat, err := HandleMembershipUpdate(allChatsMap[membershipUpdate.ChatID], membershipUpdate, types.EncodeHex(crypto.FromECDSAPub(&m.identity.PublicKey)))
+						if err != nil {
+							logger.Warn("failed to process membership update", zap.Error(err))
 							continue
 						}
+						logger.Info("GOT CHAT", zap.Any("CHAT", chat))
 
-						// If deleted-at is greater, ignore message
-						if chat.DeletedAtClockValue >= receivedMessage.Clock {
-							continue
-						}
-
-						// Set the LocalChatID for the message
-						receivedMessage.LocalChatID = chat.ID
-
-						if c, ok := allChatsMap[chat.ID]; ok {
-							chat = c
-						}
-
-						// Increase unviewed count
-						if !isPubKeyEqual(receivedMessage.SigPubKey, &m.identity.PublicKey) {
-							chat.UnviewedMessagesCount++
-						} else {
-							// Our own message, mark as sent
-							receivedMessage.OutgoingStatus = OutgoingStatusSent
-						}
-
-						// Update chat timestamp
-						chat.Timestamp = int64(timestampInMs())
-						// Update last clock value
-						if chat.LastClockValue <= receivedMessage.Clock {
-							chat.LastClockValue = receivedMessage.Clock
-							encodedLastMessage, err := json.Marshal(receivedMessage)
-							if err != nil {
-								return nil, err
-							}
-							chat.LastMessage = encodedLastMessage
-						}
-
-						// Set chat active
-						chat.Active = true
-						// Set in the map
+						// Store in chats map as it might be a new one
 						allChatsMap[chat.ID] = chat
-						// Add to response
-						response.Messages = append(response.Messages, receivedMessage)
-					}
-				} else {
-					// RawMessage, not processed here, pass straight to the client
-					rawMessages[chat] = append(rawMessages[chat], msg)
-				}
+						// Set in the map
+						modifiedChats[chat.ID] = true
 
+						if rawMembershipUpdate.Message != nil {
+
+							logger.Info("PROCESSING MESSAGE")
+							messageState := &ReceivedMessageState{
+								Message:          *rawMembershipUpdate.Message,
+								MessageID:        messageID,
+								WhisperTimestamp: uint64(msg.TransportMessage.Timestamp) * 1000,
+								Contact:          contact,
+
+								PublicKey:     publicKey,
+								AllChatsMap:   allChatsMap,
+								ModifiedChats: modifiedChats,
+								PostProcessor: postProcessor,
+							}
+							receivedMessage, err := m.handleChatMessage(messageState)
+							if err != nil {
+								logger.Warn("failed to process message", zap.Error(err))
+								continue
+							}
+							// Add to response
+							if receivedMessage != nil {
+								response.Messages = append(response.Messages, receivedMessage)
+							}
+
+						}
+
+					case protobuf.ChatMessage:
+						messageState := &ReceivedMessageState{
+							Message:          msg.ParsedMessage.(protobuf.ChatMessage),
+							MessageID:        messageID,
+							WhisperTimestamp: uint64(msg.TransportMessage.Timestamp) * 1000,
+							Contact:          contact,
+							PublicKey:        publicKey,
+							AllChatsMap:      allChatsMap,
+							ModifiedChats:    modifiedChats,
+							PostProcessor:    postProcessor,
+						}
+						receivedMessage, err := m.handleChatMessage(messageState)
+						if err != nil {
+							logger.Warn("failed to process message", zap.Error(err))
+							continue
+						}
+						// Add to response
+						if receivedMessage != nil {
+							response.Messages = append(response.Messages, receivedMessage)
+						}
+					default:
+						// RawMessage, not processed here, pass straight to the client
+						rawMessages[chat] = append(rawMessages[chat], msg)
+
+					}
+				}
 			}
 		}
 	}
@@ -1040,12 +1345,22 @@ func (m *Messenger) handleRetrievedMessages(chatWithMessages map[transport.Filte
 		return nil, err
 	}
 
-	for _, c := range allChatsMap {
-		response.Chats = append(response.Chats, c)
+	for id, _ := range modifiedChats {
+		response.Chats = append(response.Chats, allChatsMap[id])
 	}
 
-	m.persistence.SaveChats(response.Chats)
-	m.SaveMessages(response.Messages)
+	if len(response.Chats) > 0 {
+		err = m.persistence.SaveChats(response.Chats)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(response.Messages) > 0 {
+		err = m.SaveMessages(response.Messages)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	for filter, messages := range rawMessages {
 		response.RawMessages = append(response.RawMessages, &RawResponse{Filter: &filter, Messages: messages})
@@ -1189,26 +1504,7 @@ func newPostProcessor(m *Messenger, config postProcessorConfig) *postProcessor {
 	}
 }
 
-func (p *postProcessor) matchMessages(messages []*Message) ([]*Message, error) {
-	chats, err := p.persistence.Chats()
-	if err != nil {
-		return nil, err
-	}
-
-	result := make([]*Message, 0, len(messages))
-	for _, message := range messages {
-		chat, err := p.matchMessage(message, chats)
-		if err != nil {
-			p.logger.Error("failed to match a chat to a message", zap.Error(err))
-			continue
-		}
-		message.LocalChatID = chat.ID
-		result = append(result, message)
-	}
-	return result, nil
-}
-
-func (p *postProcessor) matchMessage(message *Message, chats []*Chat) (*Chat, error) {
+func (p *postProcessor) matchMessage(message *Message, chats map[string]*Chat) (*Chat, error) {
 	if message.SigPubKey == nil {
 		p.logger.Error("public key can't be empty")
 		return nil, errors.New("received a message with empty public key")
@@ -1219,7 +1515,7 @@ func (p *postProcessor) matchMessage(message *Message, chats []*Chat) (*Chat, er
 		// For public messages, all outgoing and incoming messages have the same chatID
 		// equal to a public chat name.
 		chatID := message.ChatId
-		chat := findChatByID(chatID, chats)
+		chat := chats[chatID]
 		if chat == nil {
 			return nil, errors.New("received a public message from non-existing chat")
 		}
@@ -1228,7 +1524,7 @@ func (p *postProcessor) matchMessage(message *Message, chats []*Chat) (*Chat, er
 		// It's a private message coming from us so we rely on Message.ChatId
 		// If chat does not exist, it should be created to support multidevice synchronization.
 		chatID := message.ChatId
-		chat := findChatByID(chatID, chats)
+		chat := chats[chatID]
 		if chat == nil {
 			if len(chatID) != PubKeyStringLength {
 				return nil, errors.New("invalid pubkey length")
@@ -1254,7 +1550,7 @@ func (p *postProcessor) matchMessage(message *Message, chats []*Chat) (*Chat, er
 		// It's an incoming private message. ChatID is calculated from the signature.
 		// If a chat does not exist, a new one is created and saved.
 		chatID := types.EncodeHex(crypto.FromECDSAPub(message.SigPubKey))
-		chat := findChatByID(chatID, chats)
+		chat := chats[chatID]
 		if chat == nil {
 			// TODO: this should be a three-word name used in the mobile client
 			newChat := CreateOneToOneChat(chatID[:8], message.SigPubKey)
@@ -1268,7 +1564,7 @@ func (p *postProcessor) matchMessage(message *Message, chats []*Chat) (*Chat, er
 		// In the case of a group message, ChatID is the same for all messages belonging to a group.
 		// It needs to be verified if the signature public key belongs to the chat.
 		chatID := message.ChatId
-		chat := findChatByID(chatID, chats)
+		chat := chats[chatID]
 		if chat == nil {
 			return nil, errors.New("received group chat message for non-existing chat")
 		}

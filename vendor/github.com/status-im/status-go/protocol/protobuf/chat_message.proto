@@ -50,21 +50,3 @@ message ChatMessage {
     COMMAND_REQUEST = 5;
   }
 }
-
-message ApplicationMetadataMessage {
-  // Signature of the payload field
-  bytes signature = 1;
-  // This is the encoded protobuf of the application level message, i.e ChatMessage
-  bytes payload = 2;
-
-  // The type of protobuf message sent
-  MessageType message_type = 3;
-
-  enum MessageType {
-    TEXT_MESSAGE = 0;
-    CONTACT_REQUEST = 1;
-    MEMBERSHIP_UPDATE = 2;
-    PAIR_INSTALLATION = 3;
-    SYNC_INSTALLATION = 4;
-  }
-}

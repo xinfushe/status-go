@@ -223,6 +223,76 @@ func (db sqlitePersistence) chats(tx *sql.Tx) (chats []*Chat, err error) {
 	return
 }
 
+func (db sqlitePersistence) Chat(chatID string) (*Chat, error) {
+	var (
+		chat                     Chat
+		encodedMembers           []byte
+		encodedMembershipUpdates []byte
+		pkey                     []byte
+	)
+
+	err := db.db.QueryRow(`
+		SELECT
+			id,
+			name,
+			color,
+			active,
+			type,
+			timestamp,
+			deleted_at_clock_value,
+			public_key,
+			unviewed_message_count,
+			last_clock_value,
+			last_message,
+			members,
+			membership_updates
+		FROM chats
+		WHERE id = ?
+	`, chatID).Scan(&chat.ID,
+		&chat.Name,
+		&chat.Color,
+		&chat.Active,
+		&chat.ChatType,
+		&chat.Timestamp,
+		&chat.DeletedAtClockValue,
+		&pkey,
+		&chat.UnviewedMessagesCount,
+		&chat.LastClockValue,
+		&chat.LastMessage,
+		&encodedMembers,
+		&encodedMembershipUpdates,
+	)
+	switch err {
+	case sql.ErrNoRows:
+		return nil, nil
+	case nil:
+		// Restore members
+		membersDecoder := gob.NewDecoder(bytes.NewBuffer(encodedMembers))
+		err = membersDecoder.Decode(&chat.Members)
+		if err != nil {
+			return nil, err
+		}
+
+		// Restore membership updates
+		membershipUpdatesDecoder := gob.NewDecoder(bytes.NewBuffer(encodedMembershipUpdates))
+		err = membershipUpdatesDecoder.Decode(&chat.MembershipUpdates)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(pkey) != 0 {
+			chat.PublicKey, err = crypto.UnmarshalPubkey(pkey)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return &chat, nil
+	}
+
+	return nil, err
+
+}
+
 func (db sqlitePersistence) Contacts() ([]*Contact, error) {
 	rows, err := db.db.Query(`
 		SELECT

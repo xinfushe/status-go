@@ -21,6 +21,7 @@ import (
 	"github.com/status-im/status-go/protocol/protobuf"
 	"github.com/status-im/status-go/protocol/sqlite"
 	"github.com/status-im/status-go/protocol/tt"
+	v1protocol "github.com/status-im/status-go/protocol/v1"
 	whisper "github.com/status-im/whisper/whisperv6"
 	"github.com/stretchr/testify/suite"
 	"go.uber.org/zap"
@@ -350,7 +351,7 @@ func (s *MessengerSuite) TestSendPrivateOneToOne() {
 }
 
 func (s *MessengerSuite) TestAddSystemMessages() {
-	chat, err := s.m.CreateGroupChat("test")
+	chat, err := s.m.CreateGroupChatWithMembers(context.Background(), "test", []string{})
 	s.NoError(err)
 	inputMessage := buildTestMessage(*chat)
 	inputMessage.Clock = 20
@@ -375,11 +376,12 @@ func (s *MessengerSuite) TestAddSystemMessages() {
 }
 
 func (s *MessengerSuite) TestSendPrivateGroup() {
-	chat, err := s.m.CreateGroupChat("test")
+	chat, err := s.m.CreateGroupChatWithMembers(context.Background(), "test", []string{})
 	s.NoError(err)
 	key, err := crypto.GenerateKey()
 	s.NoError(err)
-	err = s.m.AddMembersToChat(context.Background(), chat, []*ecdsa.PublicKey{&key.PublicKey})
+	members := []string{"0x" + hex.EncodeToString(crypto.FromECDSAPub(&key.PublicKey))}
+	_, err = s.m.AddMembersToGroupChat(context.Background(), chat.ID, members)
 	s.NoError(err)
 
 	inputMessage := &Message{}
@@ -402,7 +404,7 @@ func (s *MessengerSuite) TestSendPrivateGroup() {
 }
 
 func (s *MessengerSuite) TestSendPrivateEmptyGroup() {
-	chat, err := s.m.CreateGroupChat("test")
+	chat, err := s.m.CreateGroupChatWithMembers(context.Background(), "test", []string{})
 	s.NoError(err)
 
 	inputMessage := &Message{}
@@ -817,10 +819,10 @@ func (s *MessengerSuite) TestRetrieveTheirPublicChatNonExisting() {
 	s.Require().Equal(len(response.Chats), 0)
 }
 
-// Test receiving a message on an non-existing public chat
+// Test receiving a message on an non-existing private public chat
 func (s *MessengerSuite) TestRetrieveTheirGroupChatNonExisting() {
 	theirMessenger := s.newMessenger(s.shh)
-	chat, err := theirMessenger.CreateGroupChat("test")
+	chat, err := s.m.CreateGroupChatWithMembers(context.Background(), "test", []string{})
 	s.NoError(err)
 
 	err = theirMessenger.SaveChat(*chat)
@@ -832,31 +834,58 @@ func (s *MessengerSuite) TestRetrieveTheirGroupChatNonExisting() {
 	s.NoError(err)
 	s.Require().Len(sendResponse.Messages, 1)
 
-	// Wait for the message to reach its destination
-	time.Sleep(100 * time.Millisecond)
-	response, err := s.m.RetrieveAll()
-	s.NoError(err)
+	var response *MessengerResponse
+	// Retrieve their messages so that the chat is created
+	err = tt.RetryWithBackOff(func() error {
+		var err error
+		response, err = s.m.RetrieveAll()
+		if err == nil && len(response.Chats) == 1 {
+			err = errors.New("chat membership update not received")
+		}
+		return err
+	})
+	s.Require().NoError(err)
 
-	s.Require().Equal(len(response.Messages), 0)
-	s.Require().Equal(len(response.Chats), 0)
+	// The message is discarded
+	s.Require().Equal(0, len(response.Messages))
+	s.Require().Equal(0, len(response.Chats))
 }
 
 // Test receiving a message on an existing private group chat
-// Disable for now
-func (s *MessengerSuite) testRetrieveTheirPrivateGroupChat() {
+func (s *MessengerSuite) TestRetrieveTheirPrivateGroupChat() {
+	var response *MessengerResponse
 	theirMessenger := s.newMessenger(s.shh)
-	ourChat, err := s.m.CreateGroupChat("id")
+	ourChat, err := s.m.CreateGroupChatWithMembers(context.Background(), "id", []string{})
 	err = s.m.SaveChat(*ourChat)
 	s.NoError(err)
 
-	err = s.m.AddMembersToChat(context.Background(), ourChat, []*ecdsa.PublicKey{&theirMessenger.identity.PublicKey})
+	members := []string{"0x" + hex.EncodeToString(crypto.FromECDSAPub(&theirMessenger.identity.PublicKey))}
+	_, err = s.m.AddMembersToGroupChat(context.Background(), ourChat.ID, members)
 	s.NoError(err)
 
-	err = theirMessenger.SaveChat(*ourChat)
+	// Retrieve their messages so that the chat is created
+	err = tt.RetryWithBackOff(func() error {
+		var err error
+		response, err = theirMessenger.RetrieveAll()
+		if err == nil && len(response.Chats) == 0 {
+			err = errors.New("chat invitation not received")
+		}
+		return err
+	})
+	s.Require().NoError(err)
+
+	_, err = theirMessenger.ConfirmJoiningGroup(context.Background(), ourChat.ID)
 	s.NoError(err)
 
-	err = theirMessenger.Join(*ourChat)
-	s.NoError(err)
+	err = tt.RetryWithBackOff(func() error {
+		var err error
+		response, err = s.m.RetrieveAll()
+		if err == nil && len(response.Chats) == 0 {
+			err = errors.New("no joining group event received")
+		}
+		return err
+	})
+	s.Require().NoError(err)
 
 	inputMessage := buildTestMessage(*ourChat)
 
@@ -866,7 +895,6 @@ func (s *MessengerSuite) testRetrieveTheirPrivateGroupChat() {
 
 	sentMessage := sendResponse.Messages[0]
 
-	var response *MessengerResponse
 	err = tt.RetryWithBackOff(func() error {
 		var err error
 		response, err = s.m.RetrieveAll()
@@ -887,14 +915,60 @@ func (s *MessengerSuite) testRetrieveTheirPrivateGroupChat() {
 	s.Require().NotNil(actualChat.LastMessage)
 }
 
-// Test it does not update the last message if clock value less then
-// Test it does not return messages from blocked contacts
-// Test it saves the messages
-// Test it does not return the message for public if no chat is there
-// Test returns contacts
-// Test it does not return raw messages if all processed
-// Test duplicate messages, don't update unviewed messages count, they are
-// not passed back
+// Test receiving a message on an existing private group chat, if messages
+// are not wrapped this will fail as they'll likely come out of order
+func (s *MessengerSuite) TestRetrieveTheirPrivateGroupWrappedMessageChat() {
+	var response *MessengerResponse
+	theirMessenger := s.newMessenger(s.shh)
+	ourChat, err := s.m.CreateGroupChatWithMembers(context.Background(), "id", []string{})
+	err = s.m.SaveChat(*ourChat)
+	s.NoError(err)
+
+	members := []string{"0x" + hex.EncodeToString(crypto.FromECDSAPub(&theirMessenger.identity.PublicKey))}
+	_, err = s.m.AddMembersToGroupChat(context.Background(), ourChat.ID, members)
+	s.NoError(err)
+
+	// Retrieve their messages so that the chat is created
+	err = tt.RetryWithBackOff(func() error {
+		var err error
+		response, err = theirMessenger.RetrieveAll()
+		if err == nil && len(response.Chats) == 0 {
+			err = errors.New("chat invitation not received")
+		}
+		return err
+	})
+	s.Require().NoError(err)
+
+	_, err = theirMessenger.ConfirmJoiningGroup(context.Background(), ourChat.ID)
+	s.NoError(err)
+
+	inputMessage := buildTestMessage(*ourChat)
+
+	sendResponse, err := theirMessenger.SendChatMessage(context.Background(), inputMessage)
+	s.NoError(err)
+	s.Require().Len(sendResponse.Messages, 1)
+
+	sentMessage := sendResponse.Messages[0]
+
+	err = tt.RetryWithBackOff(func() error {
+		var err error
+		response, err = s.m.RetrieveAll()
+		if err == nil && len(response.Messages) == 0 {
+			err = errors.New("no messages")
+		}
+		return err
+	})
+	s.Require().NoError(err)
+
+	s.Require().Len(response.Chats, 1)
+	actualChat := response.Chats[0]
+	// It updates the unviewed messages count
+	s.Require().Equal(uint(1), actualChat.UnviewedMessagesCount)
+	// It updates the last message clock value
+	s.Require().Equal(sentMessage.Clock, actualChat.LastClockValue)
+	// It sets the last message
+	s.Require().NotNil(actualChat.LastMessage)
+}
 
 func (s *MessengerSuite) TestChatPersistencePublic() {
 	chat := Chat{
@@ -1040,25 +1114,21 @@ func (s *MessengerSuite) TestChatPersistencePrivateGroupChat() {
 				Joined: true,
 			},
 		},
-		MembershipUpdates: []ChatMembershipUpdate{
-			ChatMembershipUpdate{
-				ID:         "1",
-				Type:       "type-1",
+		MembershipUpdates: []v1protocol.MembershipUpdateEvent{
+			{
+				Type:       protobuf.MembershipUpdateEvent_CHAT_CREATED,
 				Name:       "name-1",
 				ClockValue: 1,
-				Signature:  "signature-1",
+				Signature:  []byte("signature-1"),
 				From:       "from-1",
-				Member:     "member-1",
 				Members:    []string{"member-1", "member-2"},
 			},
-			ChatMembershipUpdate{
-				ID:         "2",
-				Type:       "type-2",
+			{
+				Type:       protobuf.MembershipUpdateEvent_MEMBERS_ADDED,
 				Name:       "name-2",
 				ClockValue: 2,
-				Signature:  "signature-2",
+				Signature:  []byte("signature-2"),
 				From:       "from-2",
-				Member:     "member-2",
 				Members:    []string{"member-2", "member-3"},
 			},
 		},
@@ -1434,21 +1504,25 @@ func (s *MessengerSuite) TestSharedSecretHandler() {
 	s.NoError(err)
 }
 
-func (s *MessengerSuite) TestCreateGroupChat() {
-	chat, err := s.m.CreateGroupChat("test")
+func (s *MessengerSuite) TestCreateGroupChatWithMembers() {
+	members := []string{"0x0424a68f89ba5fcd5e0640c1e1f591d561fa4125ca4e2a43592bc4123eca10ce064e522c254bb83079ba404327f6eafc01ec90a1444331fe769d3f3a7f90b0dde1"}
+	chat, err := s.m.CreateGroupChatWithMembers(context.Background(), "test", members)
+
 	s.Require().NoError(err)
 	s.Require().Equal("test", chat.Name)
 	publicKeyHex := "0x" + hex.EncodeToString(crypto.FromECDSAPub(&s.m.identity.PublicKey))
 	s.Require().Contains(chat.ID, publicKeyHex)
 	s.EqualValues([]string{publicKeyHex}, []string{chat.Members[0].ID})
+	s.Equal(members[0], chat.Members[1].ID)
 }
 
 func (s *MessengerSuite) TestAddMembersToChat() {
-	chat, err := s.m.CreateGroupChat("test")
+	chat, err := s.m.CreateGroupChatWithMembers(context.Background(), "test", []string{})
 	s.Require().NoError(err)
 	key, err := crypto.GenerateKey()
 	s.Require().NoError(err)
-	err = s.m.AddMembersToChat(context.Background(), chat, []*ecdsa.PublicKey{&key.PublicKey})
+	members := []string{"0x" + hex.EncodeToString(crypto.FromECDSAPub(&key.PublicKey))}
+	chat, err = s.m.AddMembersToGroupChat(context.Background(), chat.ID, members)
 	s.Require().NoError(err)
 	publicKeyHex := "0x" + hex.EncodeToString(crypto.FromECDSAPub(&s.m.identity.PublicKey))
 	keyHex := "0x" + hex.EncodeToString(crypto.FromECDSAPub(&key.PublicKey))
@@ -1550,11 +1624,12 @@ func (s *PostProcessorSuite) TestRun() {
 	s.Require().NoError(err)
 
 	testCases := []struct {
-		Name            string
-		Chat            Chat // Chat to create
-		Message         Message
-		SigPubKey       *ecdsa.PublicKey
-		ExpectedChatIDs []string
+		Name           string
+		Error          bool
+		Chat           Chat // Chat to create
+		Message        Message
+		SigPubKey      *ecdsa.PublicKey
+		ExpectedChatID string
 	}{
 		{
 			Name: "Public chat",
@@ -1565,8 +1640,8 @@ func (s *PostProcessorSuite) TestRun() {
 					MessageType: protobuf.ChatMessage_PUBLIC_GROUP,
 					Text:        "test-text"},
 			},
-			SigPubKey:       &key1.PublicKey,
-			ExpectedChatIDs: []string{"test-chat"},
+			SigPubKey:      &key1.PublicKey,
+			ExpectedChatID: "test-chat",
 		},
 		{
 			Name: "Private message from myself with existing chat",
@@ -1577,8 +1652,8 @@ func (s *PostProcessorSuite) TestRun() {
 					MessageType: protobuf.ChatMessage_ONE_TO_ONE,
 					Text:        "test-text"},
 			},
-			SigPubKey:       &key1.PublicKey,
-			ExpectedChatIDs: []string{oneToOneChatID(&key1.PublicKey)},
+			SigPubKey:      &key1.PublicKey,
+			ExpectedChatID: oneToOneChatID(&key1.PublicKey),
 		},
 		{
 			Name: "Private message from other with existing chat",
@@ -1590,8 +1665,8 @@ func (s *PostProcessorSuite) TestRun() {
 					Text:        "test-text"},
 			},
 
-			SigPubKey:       &key2.PublicKey,
-			ExpectedChatIDs: []string{oneToOneChatID(&key2.PublicKey)},
+			SigPubKey:      &key2.PublicKey,
+			ExpectedChatID: oneToOneChatID(&key2.PublicKey),
 		},
 		{
 			Name: "Private message from myself without chat",
@@ -1602,8 +1677,8 @@ func (s *PostProcessorSuite) TestRun() {
 					Text:        "test-text"},
 			},
 
-			SigPubKey:       &key1.PublicKey,
-			ExpectedChatIDs: []string{oneToOneChatID(&key1.PublicKey)},
+			SigPubKey:      &key1.PublicKey,
+			ExpectedChatID: oneToOneChatID(&key1.PublicKey),
 		},
 		{
 			Name: "Private message from other without chat",
@@ -1614,12 +1689,13 @@ func (s *PostProcessorSuite) TestRun() {
 					Text:        "test-text"},
 			},
 
-			SigPubKey:       &key2.PublicKey,
-			ExpectedChatIDs: []string{oneToOneChatID(&key2.PublicKey)},
+			SigPubKey:      &key2.PublicKey,
+			ExpectedChatID: oneToOneChatID(&key2.PublicKey),
 		},
 		{
 			Name:      "Private message without public key",
 			SigPubKey: nil,
+			Error:     true,
 		},
 		{
 			Name: "Private group message",
@@ -1629,15 +1705,16 @@ func (s *PostProcessorSuite) TestRun() {
 					MessageType: protobuf.ChatMessage_PRIVATE_GROUP,
 					Text:        "test-text"},
 			},
+			Error:     true,
 			SigPubKey: &key2.PublicKey,
 		},
-
-		// TODO: add test for group messages
 	}
 
 	for idx, tc := range testCases {
 		s.Run(tc.Name, func() {
+			chatsMap := make(map[string]*Chat)
 			if tc.Chat.ID != "" {
+				chatsMap[tc.Chat.ID] = &tc.Chat
 				err := s.postProcessor.persistence.SaveChat(tc.Chat)
 				s.Require().NoError(err)
 				defer func() {
@@ -1652,12 +1729,16 @@ func (s *PostProcessorSuite) TestRun() {
 			s.Empty(message.LocalChatID)
 
 			message.ID = strconv.Itoa(idx) // manually set the ID because messages does not go through messageProcessor
-			messages, err := s.postProcessor.matchMessages([]*Message{&message})
-			s.NoError(err)
-			s.Require().Len(messages, len(tc.ExpectedChatIDs))
-			if len(tc.ExpectedChatIDs) != 0 {
-				s.Equal(tc.ExpectedChatIDs[0], message.LocalChatID)
-				s.EqualValues(&message, messages[0])
+			chat, err := s.postProcessor.matchMessage(&message, chatsMap)
+			if tc.Error {
+				s.Require().Error(err)
+			} else {
+				s.Require().NoError(err)
+				if tc.ExpectedChatID != "" {
+
+					s.Require().NotNil(chat)
+					s.Require().Equal(tc.ExpectedChatID, chat.ID)
+				}
 			}
 		})
 	}

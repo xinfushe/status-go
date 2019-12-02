@@ -17,19 +17,9 @@ var (
 	ErrInvalidDecodedValue = errors.New("invalid decoded value type")
 )
 
-// TimestampInMs is a timestamp in milliseconds.
-type TimestampInMs int64
-
-// Time returns a time.Time instance.
-func (t TimestampInMs) Time() time.Time {
-	ts := int64(t)
-	seconds := ts / 1000
-	return time.Unix(seconds, (ts%1000)*int64(time.Millisecond))
-}
-
 // TimestampInMsFromTime returns a TimestampInMs from a time.Time instance.
-func TimestampInMsFromTime(t time.Time) TimestampInMs {
-	return TimestampInMs(t.UnixNano() / int64(time.Millisecond))
+func TimestampInMsFromTime(t time.Time) uint64 {
+	return uint64(t.UnixNano() / int64(time.Millisecond))
 }
 
 // Flags define various boolean properties of a message.
@@ -53,7 +43,7 @@ func MessageID(author *ecdsa.PublicKey, data []byte) types.HexBytes {
 }
 
 // WrapMessageV1 wraps a payload into a protobuf message and signs it if an identity is provided
-func WrapMessageV1(payload []byte, identity *ecdsa.PrivateKey) ([]byte, error) {
+func WrapMessageV1(payload []byte, messageType protobuf.ApplicationMetadataMessage_MessageType, identity *ecdsa.PrivateKey) ([]byte, error) {
 	var signature []byte
 	if identity != nil {
 		var err error
@@ -64,8 +54,9 @@ func WrapMessageV1(payload []byte, identity *ecdsa.PrivateKey) ([]byte, error) {
 	}
 
 	message := &protobuf.ApplicationMetadataMessage{
-		Signature: signature,
-		Payload:   payload,
+		Signature:   signature,
+		MessageType: messageType,
+		Payload:     payload,
 	}
 	return proto.Marshal(message)
 }
