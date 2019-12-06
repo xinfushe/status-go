@@ -9,6 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/status-im/status-go/services/wallet/ierc20"
 )
 
@@ -21,6 +22,7 @@ func GetTokensBalances(parent context.Context, client *ethclient.Client, account
 	)
 	// requested current head to request balance on the same block number
 	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
+	log.Info("[call]HeaderByNumber")
 	header, err := client.HeaderByNumber(ctx, nil)
 	cancel()
 	if err != nil {

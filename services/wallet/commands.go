@@ -176,6 +176,7 @@ func (c *newBlocksTransfersCommand) Verify(parent context.Context) (err error) {
 func (c *newBlocksTransfersCommand) Run(parent context.Context) (err error) {
 	if c.from == nil {
 		ctx, cancel := context.WithTimeout(parent, 3*time.Second)
+		log.Info("[call]HeaderByNumber")
 		from, err := c.client.HeaderByNumber(ctx, nil)
 		cancel()
 		if err != nil {
@@ -187,6 +188,7 @@ func (c *newBlocksTransfersCommand) Run(parent context.Context) (err error) {
 	}
 	num := new(big.Int).Add(c.from.Number, one)
 	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	log.Info("[call]HeaderByNumber")
 	latest, err := c.client.HeaderByNumber(ctx, num)
 	cancel()
 	if err != nil {
@@ -261,6 +263,7 @@ func (c *newBlocksTransfersCommand) onNewBlock(ctx context.Context, from *DBHead
 	for from != nil && from.Hash != latest.ParentHash {
 		removed = append(removed, from)
 		added = append(added, toHead(latest))
+		log.Info("[call]HeaderByHash")
 		latest, err = c.client.HeaderByHash(ctx, latest.ParentHash)
 		if err != nil {
 			return nil, nil, err
@@ -352,6 +355,7 @@ func (c *controlCommand) verifyLastSynced(parent context.Context, last *DBHeader
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
+	log.Info("[call]HeaderByNumber")
 	header, err := c.client.HeaderByNumber(ctx, new(big.Int).Add(last.Number, c.safetyDepth))
 	cancel()
 	if err != nil {
@@ -377,6 +381,7 @@ func (c *controlCommand) verifyLastSynced(parent context.Context, last *DBHeader
 func (c *controlCommand) Run(parent context.Context) error {
 	log.Debug("start control command")
 	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
+	log.Info("[call]HeaderByNumber")
 	head, err := c.client.HeaderByNumber(ctx, nil)
 	cancel()
 	if err != nil {
@@ -400,6 +405,7 @@ func (c *controlCommand) Run(parent context.Context) error {
 		target = zero
 	}
 	ctx, cancel = context.WithTimeout(parent, 3*time.Second)
+	log.Info("[call]HeaderByNumber")
 	head, err = c.client.HeaderByNumber(ctx, target)
 	cancel()
 	if err != nil {

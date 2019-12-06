@@ -25,6 +25,7 @@ require (
 	github.com/go-stack/stack v1.5.4
 	github.com/golang/protobuf v1.2.0
 	github.com/golang/snappy v0.0.0-20170215233205-553a64147049
+	github.com/gorilla/websocket v1.4.1
 	github.com/hashicorp/golang-lru v0.0.0-20160813221303-0a025b7e63ad
 	github.com/huin/goupnp v0.0.0-20161224104101-679507af18f3
 	github.com/influxdata/influxdb v0.0.0-20180221223340-01288bdb0883
@@ -50,6 +51,8 @@ require (
 	github.com/robertkrimen/otto v0.0.0-20170205013659-6a77b7cbc37d
 	github.com/rs/cors v0.0.0-20160617231935-a62a804a8a00
 	github.com/rs/xhandler v0.0.0-20160618193221-ed27b6fd6521
+	github.com/steakknife/bloomfilter v0.0.0-20180922174646-6819c0d2a570
+	github.com/steakknife/hamming v0.0.0-20180906055917-c99c65617cd3 // indirect
 	github.com/stretchr/testify v0.0.0-20170809224252-890a5c3458b4
 	github.com/syndtr/goleveldb v0.0.0-20181128100959-b001fa50d6b2
 	github.com/uber/jaeger-client-go v0.0.0-20180607151842-f7e0d4744fa6

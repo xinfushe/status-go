@@ -51,10 +51,12 @@ func downloadEthConcurrently(c *ConcurrentDownloader, client BalanceReader, down
 			return nil
 		}
 		log.Debug("eth transfers comparing blocks", "low", low, "high", high)
+		log.Info("[call]BalanceAt")
 		lb, err := client.BalanceAt(ctx, account, low)
 		if err != nil {
 			return err
 		}
+		log.Info("[call]BalanceAt")
 		hb, err := client.BalanceAt(ctx, account, high)
 		if err != nil {
 			return err

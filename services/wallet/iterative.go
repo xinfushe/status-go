@@ -73,6 +73,7 @@ func (d *IterativeDownloader) Next(parent context.Context) ([]Transfer, error) {
 	}
 	// use integers instead of DBHeader
 	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	log.Info("[call]HeaderByNumber")
 	header, err := d.client.HeaderByNumber(ctx, to)
 	cancel()
 	if err != nil {

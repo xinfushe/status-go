@@ -61,10 +61,12 @@ func (d *ETHTransferDownloader) GetTransfers(ctx context.Context, header *DBHead
 	num := new(big.Int).Sub(header.Number, one)
 	changed := []common.Address{}
 	for _, address := range d.accounts {
+		log.Info("[call]BalanceAt")
 		balance, err := d.client.BalanceAt(ctx, address, num)
 		if err != nil {
 			return nil, err
 		}
+		log.Info("[call]BalanceAt")
 		current, err := d.client.BalanceAt(ctx, address, header.Number)
 		if err != nil {
 			return nil, err
@@ -76,6 +78,7 @@ func (d *ETHTransferDownloader) GetTransfers(ctx context.Context, header *DBHead
 	if len(changed) == 0 {
 		return nil, nil
 	}
+	log.Info("[call]BlockByHash")
 	blk, err := d.client.BlockByHash(ctx, header.Hash)
 	if err != nil {
 		return nil, err
@@ -88,6 +91,7 @@ func (d *ETHTransferDownloader) GetTransfers(ctx context.Context, header *DBHead
 }
 
 func (d *ETHTransferDownloader) GetTransfersByNumber(ctx context.Context, number *big.Int) ([]Transfer, error) {
+	log.Info("[call]BlockByNumber")
 	blk, err := d.client.BlockByNumber(ctx, number)
 	if err != nil {
 		return nil, err
@@ -107,6 +111,7 @@ func (d *ETHTransferDownloader) getTransfersInBlock(ctx context.Context, blk *ty
 				return nil, err
 			}
 			if from == address || (tx.To() != nil && *tx.To() == address) {
+				log.Info("[call]TransactionReceipt")
 				receipt, err := d.client.TransactionReceipt(ctx, tx.Hash())
 				if err != nil {
 					return nil, err
@@ -172,6 +177,7 @@ func (d *ERC20TransfersDownloader) outboundTopics(address common.Address) [][]co
 
 func (d *ERC20TransfersDownloader) transferFromLog(parent context.Context, ethlog types.Log, address common.Address) (Transfer, error) {
 	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
+	log.Info("[call]TransactionByHash")
 	tx, _, err := d.client.TransactionByHash(ctx, ethlog.TxHash)
 	cancel()
 	if err != nil {
@@ -182,12 +188,14 @@ func (d *ERC20TransfersDownloader) transferFromLog(parent context.Context, ethlo
 		return Transfer{}, err
 	}
 	ctx, cancel = context.WithTimeout(parent, 3*time.Second)
+	log.Info("[call]TransactionReceipt")
 	receipt, err := d.client.TransactionReceipt(ctx, ethlog.TxHash)
 	cancel()
 	if err != nil {
 		return Transfer{}, err
 	}
 	ctx, cancel = context.WithTimeout(parent, 3*time.Second)
+	log.Info("[call]BlockByHash")
 	blk, err := d.client.BlockByHash(ctx, ethlog.BlockHash)
 	cancel()
 	if err != nil {
@@ -239,6 +247,7 @@ func (d *ERC20TransfersDownloader) GetTransfers(ctx context.Context, header *DBH
 	hash := header.Hash
 	transfers := []Transfer{}
 	for _, address := range d.accounts {
+		log.Debug("[call]FilterLogs")
 		outbound, err := d.client.FilterLogs(ctx, ethereum.FilterQuery{
 			BlockHash: &hash,
 			Topics:    d.outboundTopics(address),
@@ -246,6 +255,7 @@ func (d *ERC20TransfersDownloader) GetTransfers(ctx context.Context, header *DBH
 		if err != nil {
 			return nil, err
 		}
+		log.Debug("[call]FilterLogs")
 		inbound, err := d.client.FilterLogs(ctx, ethereum.FilterQuery{
 			BlockHash: &hash,
 			Topics:    d.inboundTopics(address),
@@ -274,6 +284,7 @@ func (d *ERC20TransfersDownloader) GetTransfersInRange(parent context.Context, f
 	transfers := []Transfer{}
 	for _, address := range d.accounts {
 		ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+		log.Debug("[call]FilterLogs")
 		outbound, err := d.client.FilterLogs(ctx, ethereum.FilterQuery{
 			FromBlock: from,
 			ToBlock:   to,
@@ -284,6 +295,7 @@ func (d *ERC20TransfersDownloader) GetTransfersInRange(parent context.Context, f
 			return nil, err
 		}
 		ctx, cancel = context.WithTimeout(parent, 5*time.Second)
+		log.Debug("[call]FilterLogs")
 		inbound, err := d.client.FilterLogs(ctx, ethereum.FilterQuery{
 			FromBlock: from,
 			ToBlock:   to,
