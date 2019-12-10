@@ -56,7 +56,7 @@ func (db *Database) SaveConfig(typ string, value interface{}) error {
 }
 
 func (db *Database) GetConfig(typ string, value interface{}) error {
-	return db.db.QueryRow("SELECT value FROM settings WHERE type = ?", typ).Scan(&sqlite.JSONBlob{value})
+	return db.db.QueryRow("SELECT ? FROM settings", typ).Scan(&sqlite.JSONBlob{value})
 }
 
 func (db *Database) GetConfigBlob(typ string) (rst json.RawMessage, err error) {

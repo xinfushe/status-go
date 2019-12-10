@@ -1,7 +1,42 @@
 CREATE TABLE IF NOT EXISTS settings (
-type VARCHAR PRIMARY KEY,
-value BLOB
-) WITHOUT ROWID;
+  address VARCHAR PRIMARY KEY,
+  keycard_pairing VARCHAR,
+  keycard_paired_on UNSIGNED BIGINT,
+  keycard_instance_uid VARCHAR,
+  usernames vector of names
+  preferred_name VARCHAR,
+  show_name BOOLEAN,
+  stickers_packs_installed BLOB,
+  stickers_recent_stickers BLOB,
+  last_updated UNSIGNED BIGINT,
+  latest_derived_path UNSIGNED INT DEFAULT 0,
+  wallet_set_up_passed BOOLEAN DEFAULT false,
+  hide_home_tooltip BOOLEAN DEFAULT false,
+  dev_mode BOOLEAN DEFAULT false,
+  notification_enabled BOOLEAN DEFAULT false,
+  chaos_mode BOOLEAN DEFAULT false,
+  dapps_address VARCHAR,
+  photo_path BLOB NOT NULL,
+  syncing_on_mobile_network BOOLEAN DEFAULT false,
+  remember_syncing_choice BOOLEAN DEFAULT false,
+  custom_bootnodes BLOB,
+  custom_bootnodes_enabled BLOB,
+  key_uid VARCHAR,
+  mnemonic VARCHAR,
+  eip1581_address VARCHAR,
+  name VARCHAR NOT NULL,
+  wallet_root_address VARCHAR NOT NULL,
+  installation_id VARCHAR NOT NULL,
+  public_key VARCHAR NOT NULL,
+  datasync BOOLEAN DEFAULT false,
+  preview_privacy BOOLEAN DEFAULT false,
+  log_level VARCHAR,
+  currency VARCHAR,
+  fleet VARCHAR,
+  pinned_mailserver BLOB,
+  wallet_visible_tokens VARCHAR,
+  config BLOB
+);
 
 CREATE TABLE IF NOT EXISTS accounts (
 address VARCHAR PRIMARY KEY,
@@ -21,7 +56,7 @@ CREATE UNIQUE INDEX unique_chat_address ON accounts (chat) WHERE (chat);
 CREATE TABLE IF NOT EXISTS browsers (
 id TEXT PRIMARY KEY,
 name TEXT NOT NULL,
-timestamp USGIGNED BIGINT,
+timestamp UNSIGNED BIGINT,
 dapp BOOLEAN DEFAULT false,
 historyIndex UNSIGNED INT
 ) WITHOUT ROWID;
