@@ -10,8 +10,18 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/status-im/status-go/appdatabase"
-	"github.com/status-im/status-go/params"
 	"github.com/stretchr/testify/require"
+)
+
+var (
+	addr = common.Address{1}
+	cfg  = configMap{
+		"name":                "Some Name",
+		"photo_path":          "/path.jpg",
+		"wallet_root_address": "0xdeadbeef",
+		"installation_id":     "00000000-00000000-00000000-00000000",
+		"public_key":          "",
+	}
 )
 
 func setupTestDB(t *testing.T) (*Database, func()) {
@@ -19,6 +29,7 @@ func setupTestDB(t *testing.T) (*Database, func()) {
 	require.NoError(t, err)
 	db, err := appdatabase.InitializeDB(tmpfile.Name(), "settings-tests")
 	require.NoError(t, err)
+
 	return NewDB(db), func() {
 		require.NoError(t, db.Close())
 		require.NoError(t, os.Remove(tmpfile.Name()))
@@ -29,25 +40,23 @@ func TestConfig(t *testing.T) {
 	db, stop := setupTestDB(t)
 	defer stop()
 
-	conf := params.NodeConfig{
-		NetworkID: 10,
-		DataDir:   "test",
-	}
-	require.NoError(t, db.SaveConfig("node-config", conf))
-	var rst params.NodeConfig
-	require.NoError(t, db.GetConfig("node-config", &rst))
-	require.Equal(t, conf, rst)
+	require.NoError(t, db.SaveConfig(addr, cfg))
+	require.NoError(t, db.SaveConfig(addr, configMap{"currency": "USD"}))
+
+	var rst string
+	require.NoError(t, db.GetConfig(addr, "currency", &rst))
+	require.Equal(t, "USD", rst)
 }
 
 func TestConfigBlob(t *testing.T) {
 	db, stop := setupTestDB(t)
 	defer stop()
-	tag := "random-param"
-	param := 10
-	require.NoError(t, db.SaveConfig(tag, param))
-	expected, err := json.Marshal(param)
+
+	require.NoError(t, db.SaveConfig(addr, cfg))
+
+	expected, err := json.Marshal(cfg["photo_path"])
 	require.NoError(t, err)
-	rst, err := db.GetConfigBlob(tag)
+	rst, err := db.GetConfigBlob(addr, "photo_path")
 	require.NoError(t, err)
 	require.Equal(t, json.RawMessage(expected), rst)
 }
@@ -55,17 +64,20 @@ func TestConfigBlob(t *testing.T) {
 func TestGetConfigBlobs(t *testing.T) {
 	db, stop := setupTestDB(t)
 	defer stop()
-	expected := map[string]json.RawMessage{
-		"tag1": json.RawMessage("1"),
-		"tag2": json.RawMessage("2"),
-		"tag3": json.RawMessage("3"),
+
+	require.NoError(t, db.SaveConfig(addr, cfg))
+
+	expected := configMap{
+		"name":                json.RawMessage("Some Name"),
+		"wallet_root-address": json.RawMessage("0xdeadbeef"),
+		"photo_path":          json.RawMessage("/path.jpg"),
 	}
+	require.NoError(t, db.SaveConfig(addr, expected))
 	types := make([]string, 0, len(expected))
-	for k, v := range expected {
-		require.NoError(t, db.SaveConfig(k, v))
+	for k, _ := range expected {
 		types = append(types, k)
 	}
-	rst, err := db.GetConfigBlobs(types)
+	rst, err := db.GetConfigBlobs(addr, types)
 	require.NoError(t, err)
 	require.Equal(t, expected, rst)
 }

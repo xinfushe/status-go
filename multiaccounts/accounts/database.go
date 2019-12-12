@@ -18,10 +18,51 @@ const (
 )
 
 var (
+	settingsFields = map[string]bool{
+		"chaos_mode":                true,
+		"config":                    true,
+		"currency":                  true,
+		"custom_bootnodes":          true,
+		"custom_bootnodes_enabled":  true,
+		"dapps_address":             true,
+		"datasync":                  true,
+		"dev_mode":                  true,
+		"eip1581_address":           true,
+		"fleet":                     true,
+		"hide_home_tooltip":         true,
+		"installation_id":           true,
+		"key_uid":                   true,
+		"keycard_instance_uid":      true,
+		"keycard_paired_on":         true,
+		"keycard_pairing":           true,
+		"last_updated":              true,
+		"latest_derived_path":       true,
+		"log_level":                 true,
+		"mnemonic":                  true,
+		"name":                      true,
+		"notification_enabled":      true,
+		"photo_path":                true,
+		"pinned_mailserver":         true,
+		"preferred_name":            true,
+		"preview_privacy":           true,
+		"public_key":                true,
+		"remember_syncing_choice":   true,
+		"show_name":                 true,
+		"stickers_packs_installed":  true,
+		"stickers_recent_stickers":  true,
+		"syncing_on_mobile_network": true,
+		"usernames":                 true,
+		"wallet_root_address":       true,
+		"wallet_set_up_passed":      true,
+		"wallet_visible_tokens":     true,
+	}
+
 	// ErrWalletNotUnique returned if another account has `wallet` field set to true.
 	ErrWalletNotUnique = errors.New("another account is set to be default wallet. disable it before using new")
 	// ErrChatNotUnique returned if another account has `chat` field set to true.
 	ErrChatNotUnique = errors.New("another account is set to be default chat. disable it before using new")
+	// ErrInvalidConfig returned if config isn't allowed
+	ErrInvalidConfig = errors.New("configuration value not allowed")
 )
 
 type Account struct {
@@ -35,6 +76,8 @@ type Account struct {
 	Name      string         `json:"name"`
 	Color     string         `json:"color"`
 }
+
+type configMap map[string]interface{}
 
 func NewDB(db *sql.DB) *Database {
 	return &Database{db: db}
@@ -50,44 +93,80 @@ func (db Database) Close() error {
 	return db.db.Close()
 }
 
-func (db *Database) SaveConfig(typ string, value interface{}) error {
-	_, err := db.db.Exec("INSERT OR REPLACE INTO settings (type, value) VALUES (?, ?)", typ, &sqlite.JSONBlob{value})
-	return err
-}
-
-func (db *Database) GetConfig(typ string, value interface{}) error {
-	return db.db.QueryRow("SELECT value FROM settings WHERE type = ?", typ).Scan(&sqlite.JSONBlob{value})
-}
-
-func (db *Database) GetConfigBlob(typ string) (rst json.RawMessage, err error) {
-	return rst, db.db.QueryRow("SELECT value FROM settings WHERE type = ?", typ).Scan(&rst)
-}
-
-func (db *Database) GetConfigBlobs(types []string) (map[string]json.RawMessage, error) {
-	// it expands number of bind vars to the number of types. sql interface doesn't allow to bypass it without modifying driver.
-	// expansion can be hidden in a function that modifies string but better to make it explicitly.
-	query := fmt.Sprintf("SELECT type, value FROM settings WHERE type IN (?%s)", strings.Repeat(",?", len(types)-1)) // nolint: gosec
-	args := make([]interface{}, len(types))
-	for i := range types {
-		args[i] = types[i]
+func (db *Database) SaveConfig(addr common.Address, conf configMap) error {
+	if len(conf) == 0 {
+		return nil
 	}
-	rows, err := db.db.Query(query, args...)
+
+	var (
+		vals = []interface{}{addr}
+		cols = []string{"address"}
+	)
+	for typ, val := range conf {
+		if _, ok := settingsFields[typ]; !ok {
+			return ErrInvalidConfig
+		}
+
+		cols = append(cols, typ)
+		vals = append(vals, &sqlite.JSONBlob{Data: val})
+	}
+
+	// Try to insert first, if not we update.
+	stmt := fmt.Sprintf("INSERT INTO settings (%s) VALUES (?%s)",
+		strings.Join(cols, ", "),
+		strings.Repeat(", ?", len(vals)-1),
+	)
+
+	_, err := db.db.Exec(stmt, vals...)
 	if err != nil {
+		stmt := fmt.Sprintf("UPDATE settings SET %s = ? WHERE address = ?", strings.Join(cols[1:], " = ?, "))
+		_, err := db.db.Exec(stmt, append(vals[1:], addr)...)
+		return err
+	}
+
+	return nil
+}
+
+func (db *Database) GetConfig(addr common.Address, typ string, value interface{}) error {
+	if _, ok := settingsFields[typ]; !ok {
+		return ErrInvalidConfig
+	}
+
+	stmt := fmt.Sprintf("SELECT %s FROM settings WHERE address = ?", typ)
+	return db.db.QueryRow(stmt, addr).Scan(&sqlite.JSONBlob{Data: value})
+}
+
+func (db *Database) GetConfigBlob(addr common.Address, typ string) (json.RawMessage, error) {
+	cfgs, err := db.GetConfigBlobs(addr, []string{typ})
+	return cfgs[typ], err
+}
+
+func (db *Database) GetConfigBlobs(addr common.Address, types []string) (map[string]json.RawMessage, error) {
+	for _, typ := range types {
+		if _, ok := settingsFields[typ]; !ok {
+			return nil, ErrInvalidConfig
+		}
+	}
+
+	var (
+		settings = map[string]json.RawMessage{}
+		stmt     = fmt.Sprintf("SELECT %s FROM settings WHERE address = ?", strings.Join(types, ", "))
+
+		ptrs = make([]interface{}, len(types))
+		vals = make([]json.RawMessage, len(types))
+	)
+	for i, _ := range types {
+		ptrs[i] = &vals[i]
+	}
+	if err := db.db.QueryRow(stmt, addr).Scan(ptrs...); err != nil {
 		return nil, err
 	}
-	rst := make(map[string]json.RawMessage, len(types))
-	for rows.Next() {
-		var (
-			buf = json.RawMessage{}
-			typ string
-		)
-		err = rows.Scan(&typ, &buf)
-		if err != nil {
-			return nil, err
-		}
-		rst[typ] = buf
+
+	for i, typ := range types {
+		settings[typ] = vals[i]
 	}
-	return rst, nil
+
+	return settings, nil
 }
 
 func (db *Database) GetAccounts() ([]Account, error) {

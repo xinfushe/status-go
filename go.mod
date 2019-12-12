@@ -18,6 +18,8 @@ replace github.com/status-im/status-go/eth-node => ./eth-node
 
 replace github.com/status-im/status-go/whisper/v6 => ./whisper
 
+replace github.com/mutecomm/go-sqlcipher => github.com/andremedeiros/go-sqlcipher v0.0.0-sqlcipher420
+
 require (
 	github.com/beevik/ntp v0.2.0
 	github.com/ethereum/go-ethereum v1.9.5

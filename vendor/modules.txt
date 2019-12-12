@@ -309,7 +309,7 @@ github.com/multiformats/go-multibase
 github.com/multiformats/go-multihash
 # github.com/multiformats/go-multistream v0.1.0
 github.com/multiformats/go-multistream
-# github.com/mutecomm/go-sqlcipher v0.0.0-20190227152316-55dbde17881f
+# github.com/mutecomm/go-sqlcipher v0.0.0-20190227152316-55dbde17881f => github.com/andremedeiros/go-sqlcipher v0.0.0-sqlcipher420
 github.com/mutecomm/go-sqlcipher
 # github.com/okzk/sdnotify v0.0.0-20180710141335-d9becc38acbd
 github.com/okzk/sdnotify
