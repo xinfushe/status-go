@@ -900,11 +900,24 @@ func (b *GethStatusBackend) startWallet() error {
 	}
 
 	allAddresses := make([]common.Address, len(watchAddresses)+1)
-	allAddresses[0] = mainAccountAddress
-	copy(allAddresses[1:], watchAddresses)
+
+	allAddresses[0] = common.Address(mainAccountAddress)
+	for i, addr := range watchAddresses {
+		allAddresses[1+i] = common.Address(addr)
+	}
+
+	uniqAddressesMap := map[common.Address]struct{}{}
+	uniqAddresses := []common.Address{}
+	for _, address := range allAddresses {
+		if _, ok := uniqAddressesMap[address]; !ok {
+			uniqAddressesMap[address] = struct{}{}
+			uniqAddresses = append(uniqAddresses, address)
+		}
+	}
+
 	return wallet.StartReactor(
 		b.statusNode.RPCClient().Ethclient(),
-		allAddresses,
+		uniqAddresses,
 		new(big.Int).SetUint64(b.statusNode.Config().NetworkID))
 }
 
