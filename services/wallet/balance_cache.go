@@ -8,20 +8,22 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-type BalanceCache struct {
-	cache map[common.Address]map[*big.Int]*big.Int
-	lock  sync.RWMutex
+type balanceCache struct {
+	// cache maps an address to a map of a block number and the balance of this particular address
+	cache            map[common.Address]map[*big.Int]*big.Int
+	requestCounter   map[common.Address]uint
+	cacheHitsCounter map[common.Address]uint
+	lock             sync.RWMutex
 }
 
-func (b *BalanceCache) readCachedBalance(account common.Address, blockNumber *big.Int) (*big.Int, bool) {
+func (b *balanceCache) readCachedBalance(account common.Address, blockNumber *big.Int) *big.Int {
 	b.lock.RLock()
 	defer b.lock.RUnlock()
 
-	balance, exists := b.cache[account][blockNumber]
-	return balance, exists
+	return b.cache[account][blockNumber]
 }
 
-func (b *BalanceCache) addBalanceToCache(account common.Address, blockNumber *big.Int, balance *big.Int) {
+func (b *balanceCache) addBalanceToCache(account common.Address, blockNumber *big.Int, balance *big.Int) {
 	b.lock.Lock()
 	defer b.lock.Unlock()
 
@@ -32,24 +34,57 @@ func (b *BalanceCache) addBalanceToCache(account common.Address, blockNumber *bi
 	b.cache[account][blockNumber] = balance
 }
 
-func (b *BalanceCache) BalanceAt(client BalanceReader, ctx context.Context, account common.Address, blockNumber *big.Int) (*big.Int, error) {
-	cachedBalance, exists := b.readCachedBalance(account, blockNumber)
-	if exists {
-		return cachedBalance, nil
-	} else {
-		balance, err := client.BalanceAt(ctx, account, blockNumber)
-		if err != nil {
-			return nil, err
-		}
-		b.addBalanceToCache(account, blockNumber, balance)
+func (b *balanceCache) incRequestsNumber(account common.Address) {
+	b.lock.Lock()
+	defer b.lock.Unlock()
 
-		return balance, nil
+	cnt, ok := b.requestCounter[account]
+	if !ok {
+		b.requestCounter[account] = 1
 	}
+
+	b.requestCounter[account] = cnt + 1
 }
 
-func NewBalanceCache() *BalanceCache {
-	return &BalanceCache{
-		cache: make(map[common.Address]map[*big.Int]*big.Int),
-		lock:  sync.RWMutex{},
+func (b *balanceCache) incCacheHitNumber(account common.Address) {
+	b.lock.Lock()
+	defer b.lock.Unlock()
+
+	cnt, ok := b.cacheHitsCounter[account]
+	if !ok {
+		b.cacheHitsCounter[account] = 1
+	}
+
+	b.cacheHitsCounter[account] = cnt + 1
+}
+
+func (b *balanceCache) getStats(account common.Address) (uint, uint) {
+	b.lock.RLock()
+	defer b.lock.RUnlock()
+
+	return b.requestCounter[account], b.cacheHitsCounter[account]
+}
+
+func (b *balanceCache) BalanceAt(client BalanceReader, ctx context.Context, account common.Address, blockNumber *big.Int) (*big.Int, error) {
+	b.incRequestsNumber(account)
+	cachedBalance := b.readCachedBalance(account, blockNumber)
+	if cachedBalance != nil {
+		b.incCacheHitNumber(account)
+		return cachedBalance, nil
+	}
+	balance, err := client.BalanceAt(ctx, account, blockNumber)
+	if err != nil {
+		return nil, err
+	}
+	b.addBalanceToCache(account, blockNumber, balance)
+
+	return balance, nil
+}
+
+func newBalanceCache() *balanceCache {
+	return &balanceCache{
+		cache:            make(map[common.Address]map[*big.Int]*big.Int),
+		requestCounter:   make(map[common.Address]uint),
+		cacheHitsCounter: make(map[common.Address]uint),
 	}
 }
