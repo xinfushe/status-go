@@ -16,8 +16,6 @@ import (
 
 	"github.com/syndtr/goleveldb/leveldb"
 
-	"github.com/ethereum/go-ethereum/accounts"
-	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
 	gethrpc "github.com/ethereum/go-ethereum/rpc"
 
@@ -106,10 +104,10 @@ func (e *DuplicateServiceError) Error() string {
 // the protocol stack, that is passed to all constructors to be optionally used;
 // as well as utility methods to operate on the service environment.
 type ServiceContext struct {
-	config         *params.NodeConfig
-	services       map[reflect.Type]Service // Index of the already constructed services
-	EventMux       *event.TypeMux           // Event multiplexer used for decoupled notifications
-	AccountManager *accounts.Manager        // Account manager created by the node.
+	config   *params.NodeConfig
+	services map[reflect.Type]Service // Index of the already constructed services
+	// EventMux *event.TypeMux           // Event multiplexer used for decoupled notifications
+	// AccountManager *accounts.Manager        // Account manager created by the node.
 }
 
 // Service retrieves a currently running service registered of a specific type.
@@ -200,21 +198,20 @@ func (n *StatusNode) Register(constructor ServiceConstructor) error {
 
 // Start starts current StatusNode, failing if it's already started.
 // It accepts a list of services that should be added to the node.
-func (n *StatusNode) Start(config *params.NodeConfig, accs *accounts.Manager, services ...ServiceConstructor) error {
+func (n *StatusNode) Start(config *params.NodeConfig, services ...ServiceConstructor) error {
 	panic("Start")
 	return n.StartWithOptions(config, StartOptions{
-		Services:        services,
-		StartDiscovery:  true,
-		AccountsManager: accs,
+		Services:       services,
+		StartDiscovery: true,
 	})
 }
 
 // StartOptions allows to control some parameters of Start() method.
 type StartOptions struct {
-	Node            types.Node
-	Services        []ServiceConstructor
-	StartDiscovery  bool
-	AccountsManager *accounts.Manager
+	Node           types.Node
+	Services       []ServiceConstructor
+	StartDiscovery bool
+	// AccountsManager *accounts.Manager
 }
 
 // StartWithOptions starts current StatusNode, failing if it's already started.
@@ -237,7 +234,7 @@ func (n *StatusNode) StartWithOptions(config *params.NodeConfig, options StartOp
 
 	n.db = db
 
-	err = n.startWithDB(config, options.AccountsManager, db, options.Services)
+	err = n.startWithDB(config, db, options.Services)
 
 	// continue only if there was no error when starting node with a db
 	if err == nil && options.StartDiscovery && n.discoveryEnabled() {
@@ -255,8 +252,8 @@ func (n *StatusNode) StartWithOptions(config *params.NodeConfig, options StartOp
 	return nil
 }
 
-func (n *StatusNode) startWithDB(config *params.NodeConfig, accs *accounts.Manager, db *leveldb.DB, services []ServiceConstructor) error {
-	if err := n.createNode(config, accs, services, db); err != nil {
+func (n *StatusNode) startWithDB(config *params.NodeConfig, db *leveldb.DB, services []ServiceConstructor) error {
+	if err := n.createNode(config, services, db); err != nil {
 		return err
 	}
 
@@ -267,7 +264,7 @@ func (n *StatusNode) startWithDB(config *params.NodeConfig, accs *accounts.Manag
 	return nil
 }
 
-func (n *StatusNode) createNode(config *params.NodeConfig, accs *accounts.Manager, services []ServiceConstructor, db *leveldb.DB) error {
+func (n *StatusNode) createNode(config *params.NodeConfig, services []ServiceConstructor, db *leveldb.DB) error {
 	var privateKey *ecdsa.PrivateKey
 	if config.NodeKey != "" {
 		var err error
@@ -280,7 +277,7 @@ func (n *StatusNode) createNode(config *params.NodeConfig, accs *accounts.Manage
 	n.privateKey = privateKey
 	n.node = nimbusbridge.NewNodeBridge()
 
-	err := n.activateServices(config, accs, db)
+	err := n.activateServices(config, db)
 	if err != nil {
 		return err
 	}
@@ -453,7 +450,7 @@ func (n *StatusNode) stopPublicInProc() {
 	}
 }
 
-func (n *StatusNode) activateServices(config *params.NodeConfig, accs *accounts.Manager, db *leveldb.DB) error {
+func (n *StatusNode) activateServices(config *params.NodeConfig, db *leveldb.DB) error {
 	// start Ethereum service if we are not expected to use an upstream server
 	if !config.UpstreamConfig.Enabled {
 	} else {

@@ -442,8 +442,8 @@ func (b *nimbusStatusBackend) startNode(config *params.NodeConfig) (err error) {
 		// The peers discovery protocols are started manually after
 		// `node.ready` signal is sent.
 		// It was discussed in https://github.com/status-im/status-go/pull/1333.
-		StartDiscovery:  false,
-		AccountsManager: nil, //manager,
+		StartDiscovery: false,
+		// AccountsManager: manager,
 	}); err != nil {
 		return
 	}
