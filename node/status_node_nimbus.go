@@ -724,7 +724,33 @@ func (n *StatusNode) Stop() error {
 		return ErrNoRunningNode
 	}
 
-	return n.stop()
+	var errs []error
+
+	// Terminate all subsystems and collect any errors
+	if err := n.stop(); err != nil && err != ErrNodeStopped {
+		errs = append(errs, err)
+	}
+	// Report any errors that might have occurred
+	switch len(errs) {
+	case 0:
+		return nil
+	case 1:
+		return errs[0]
+	default:
+		return fmt.Errorf("%v", errs)
+	}
+}
+
+// StopError is returned if a Node fails to stop either any of its registered
+// services or itself.
+type StopError struct {
+	Server   error
+	Services map[reflect.Type]error
+}
+
+// Error generates a textual representation of the stop error.
+func (e *StopError) Error() string {
+	return fmt.Sprintf("server: %v, services: %v", e.Server, e.Services)
 }
 
 // stop will stop current StatusNode. A stopped node cannot be resumed.
@@ -742,11 +768,21 @@ func (n *StatusNode) stop() error {
 	// 	return err
 	// }
 
+	// Terminate the API, services and the p2p server.
 	n.stopPublicInProc()
 	n.stopInProc()
 	n.rpcClient = nil
 	n.rpcPrivateClient = nil
 	n.rpcAPIs = nil
+
+	failure := &StopError{
+		Services: make(map[reflect.Type]error),
+	}
+	for kind, service := range n.services {
+		if err := service.Stop(); err != nil {
+			failure.Services[kind] = err
+		}
+	}
 	n.services = nil
 	// We need to clear `node` because config is passed to `Start()`
 	// and may be completely different. Similarly with `config`.
@@ -765,6 +801,9 @@ func (n *StatusNode) stop() error {
 		return err
 	}
 
+	if len(failure.Services) > 0 {
+		return failure
+	}
 	return nil
 }
 
