@@ -26,7 +26,7 @@ require (
 	github.com/go-playground/universal-translator v0.17.0 // indirect
 	github.com/golang/mock v1.3.1
 	github.com/leodido/go-urn v1.2.0 // indirect
-	github.com/lib/pq v1.2.0
+	github.com/lib/pq v1.3.0
 	github.com/libp2p/go-libp2p v0.4.0 // indirect; indirect
 	github.com/libp2p/go-libp2p-core v0.2.3
 	github.com/multiformats/go-multiaddr v0.1.1
